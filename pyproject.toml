@@ -1,0 +1,51 @@
+[build-system]
+requires = ["briefcase"]
+build-backend = "briefcase.integrations.build_system"
+
+[tool.briefcase]
+requires-python = ">=3.11"
+project_name = "SFTP UI"
+bundle = "com.sftpui"
+version = "0.1.0"
+url = "https://github.com/mylilcrowdi/sftp-ui"
+license.text = "MIT"
+author = "async"
+author_email = "asktheinternet069@gmail.com"
+
+[tool.briefcase.app.sftp-ui]
+formal_name = "SFTP UI"
+description = "A modern, native SFTP client"
+long_description = "Dual-pane SFTP client with transfer queue, resume support and theming."
+sources = ["src/sftp_ui"]
+test_sources = ["tests"]
+
+requires = [
+    "PySide6>=6.5",
+    "paramiko>=3.0",
+    "keyring>=24.0",
+]
+
+test_requires = [
+    "pytest",
+    "pytest-mock",
+]
+
+[tool.briefcase.app.sftp-ui.macOS]
+requires = [
+    "std-nslog~=1.0.0",
+]
+
+[tool.briefcase.app.sftp-ui.linux]
+requires = []
+
+[tool.briefcase.app.sftp-ui.linux.system.ubuntu]
+system_requires = [
+    "libgl1-mesa-dev",
+    "libglib2.0-dev",
+    "libdbus-1-dev",
+    "libxkbcommon-dev",
+    "libfontconfig1-dev",
+]
+
+[tool.briefcase.app.sftp-ui.windows]
+requires = []

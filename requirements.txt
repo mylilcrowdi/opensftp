@@ -1,0 +1,5 @@
+PySide6>=6.5
+paramiko>=3.0
+cryptography>=42
+# Cloud storage (optional — required only for S3 / GCS connections)
+boto3>=1.26         # Amazon S3 + S3-compatible (MinIO, Backblaze B2, DO Spaces …)

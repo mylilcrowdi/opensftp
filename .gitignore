@@ -1,0 +1,55 @@
+# Python
+__pycache__/
+*.py[cod]
+*.pyo
+*.pyd
+.Python
+*.egg
+*.egg-info/
+dist/
+build/
+*.so
+.venv/
+venv/
+env/
+
+# Briefcase
+.briefcase/
+macOS/
+linux/
+windows/
+android/
+iOS/
+web/
+logs/
+
+# Test / lint
+.pytest_cache/
+.mypy_cache/
+.ruff_cache/
+htmlcov/
+.coverage
+coverage.xml
+
+# macOS
+.DS_Store
+*.DS_Store
+.AppleDouble
+.LSOverride
+
+# IDE
+.idea/
+.vscode/
+*.swp
+*.swo
+
+# Project-specific
+config/
+sftp_ui/          # legacy root-level duplicate — delete this dir
+main.py           # legacy entry point — delete this file
+test_window.py    # scratch test file — delete this file
+run.sh            # scratch runner — delete this file
+
+# User data (never commit credentials or state)
+~/.config/sftp-ui/
+*.dist-info/
