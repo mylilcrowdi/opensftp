@@ -52,7 +52,9 @@ def _make_mime(entry_dicts: list[dict]) -> QMimeData:
 def remote_panel():
     panel = RemotePanel()
     panel.resize(600, 400)
-    return panel
+    yield panel
+    panel.close()
+    panel.deleteLater()
 
 
 # ---------------------------------------------------------------------------
@@ -62,18 +64,30 @@ def remote_panel():
 class TestDropOverlayLabel:
     def test_default_label_is_upload(self):
         overlay = _DropOverlay()
-        assert overlay._label == "Drop to upload"
+        try:
+            assert overlay._label == "Drop to upload"
+        finally:
+            overlay.close()
+            overlay.deleteLater()
 
     def test_set_label_updates_text(self):
         overlay = _DropOverlay()
-        overlay.set_label("Drop to copy")
-        assert overlay._label == "Drop to copy"
+        try:
+            overlay.set_label("Drop to copy")
+            assert overlay._label == "Drop to copy"
+        finally:
+            overlay.close()
+            overlay.deleteLater()
 
     def test_set_label_triggers_update(self):
         overlay = _DropOverlay()
-        with patch.object(overlay, "update") as mock_update:
-            overlay.set_label("Drop to copy")
-            mock_update.assert_called_once()
+        try:
+            with patch.object(overlay, "update") as mock_update:
+                overlay.set_label("Drop to copy")
+                mock_update.assert_called_once()
+        finally:
+            overlay.close()
+            overlay.deleteLater()
 
 
 # ---------------------------------------------------------------------------
