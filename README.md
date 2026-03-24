@@ -3,7 +3,7 @@
 **A dual-pane SFTP client for macOS, Linux, and Windows.**
 Built with Python and PySide6. Native feel. No Electron.
 
-[![CI](https://github.com/mylilcrowdi/sftp-ui/actions/workflows/ci.yml/badge.svg)](https://github.com/mylilcrowdi/sftp-ui/actions/workflows/ci.yml)
+[![CI](https://github.com/mylilcrowdi/opensftp/actions/workflows/ci.yml/badge.svg)](https://github.com/mylilcrowdi/opensftp/actions/workflows/ci.yml)
 [![Python 3.11+](https://img.shields.io/badge/python-3.11%2B-blue.svg)](https://www.python.org/downloads/)
 [![License: MIT](https://img.shields.io/badge/license-MIT-green.svg)](LICENSE)
 
@@ -74,8 +74,8 @@ The free, MIT-licensed version. Clone and run with Python.
 ### 1. Clone the repo
 
 ```bash
-git clone https://github.com/mylilcrowdi/sftp-ui.git
-cd sftp-ui
+git clone https://github.com/mylilcrowdi/opensftp.git
+cd opensftp
 ```
 
 ### 2. Create a virtual environment
