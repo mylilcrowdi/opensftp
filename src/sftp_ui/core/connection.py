@@ -123,6 +123,7 @@ _CONN_KNOWN_FIELDS = {
     "name", "host", "user", "port", "key_path",
     "key_passphrase", "password", "tunnel", "id",
     "favorite", "group", "last_connected", "protocol", "cloud", "use_agent",
+    "keepalive_interval",
 }
 
 
@@ -143,10 +144,15 @@ class Connection:
     last_connected: float = 0.0             # unix timestamp of last successful connect
     protocol: str = "sftp"                  # "sftp" | "s3" | "gcs"
     cloud: Optional[CloudConfig] = None     # set when protocol is "s3" or "gcs"
+    keepalive_interval: int = 30            # SSH keepalive interval in seconds (0 = disabled)
 
     def __post_init__(self) -> None:
         if not self.name:
             raise ValueError("name must not be empty")
+        if not (0 <= self.keepalive_interval <= 3600):
+            raise ValueError(
+                f"keepalive_interval must be 0-3600, got {self.keepalive_interval}"
+            )
         if self.protocol not in ("sftp", "s3", "gcs"):
             raise ValueError(f"protocol must be 'sftp', 's3', or 'gcs', got {self.protocol!r}")
         if self.protocol == "sftp":
@@ -172,6 +178,12 @@ class Connection:
         data = {k: v for k, v in data.items() if k in _CONN_KNOWN_FIELDS}
         tunnel_data = data.pop("tunnel", None)
         cloud_data = data.pop("cloud", None)
+        # Coerce keepalive_interval to int (JSON may store it as float)
+        if "keepalive_interval" in data:
+            try:
+                data["keepalive_interval"] = int(data["keepalive_interval"])
+            except (TypeError, ValueError):
+                data["keepalive_interval"] = 30  # fall back to default
         # Build cloud / tunnel before calling the constructor so __post_init__
         # receives them and can validate correctly.
         if cloud_data is not None:

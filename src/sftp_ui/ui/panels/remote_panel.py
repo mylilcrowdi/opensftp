@@ -330,6 +330,7 @@ class RemotePanel(QWidget):
     download_requested = Signal(list)          # list[RemoteEntry]
     status_message = Signal(str)
     column_widths_changed = Signal(list)   # [w0, w1, w2]
+    sort_state_changed = Signal(int, int)  # (col, order_int)  — -1 col means neutral
 
     def __init__(self, sftp: Optional[SFTPClient] = None, parent=None) -> None:
         super().__init__(parent)
@@ -342,6 +343,10 @@ class RemotePanel(QWidget):
         self._filter_text: str = ""                       # inline filename filter
         self._all_entries: list[RemoteEntry] = []         # unfiltered server listing
         self._edit_watchers: list = []
+        # {tmp_path: {"watcher": QFileSystemWatcher, "remote_path": str,
+        #             "timer": QTimer|None, "tmp_dir": str}}
+        self._edit_sessions: dict[str, dict] = {}
+        self._edit_ready.connect(self._on_edit_ready)
         self._nav_gen: int = 0                            # incremented on each navigate() call
         self._nav_signals = _ListdirSignals()
         self._nav_signals.done.connect(self._on_listdir_done)
@@ -450,6 +455,9 @@ class RemotePanel(QWidget):
             hdr.setSortIndicator(self._sort_col, self._sort_order)
             self._model.sort(self._sort_col, self._sort_order)
 
+        # Persist new sort preference so it survives reconnects
+        self.sort_state_changed.emit(self._sort_col, self._sort_order.value)
+
     # ── Hidden files toggle ────────────────────────────────────────────────────
 
     def _on_filter_changed(self, text: str) -> None:
@@ -475,6 +483,25 @@ class RemotePanel(QWidget):
         for i, w in enumerate(widths[:3]):
             hdr.resizeSection(i, w)
 
+    def restore_sort_state(self, col: int, order: int) -> None:
+        """Restore a persisted sort state after reconnect.
+
+        Args:
+            col:   Column index to sort by, or ``-1`` for natural server order.
+            order: ``0`` for ascending, ``1`` for descending.
+        """
+        hdr = self._table.horizontalHeader()
+        self._sort_col   = col
+        self._sort_order = Qt.SortOrder(order)
+        if col == -1:
+            hdr.setSortIndicator(-1, Qt.SortOrder.AscendingOrder)
+            # No model data yet — the sort will be re-applied by _apply_entries
+            # when the first navigate() completes.
+        else:
+            hdr.setSortIndicator(col, self._sort_order)
+            # Re-apply to the currently loaded model if entries are already visible
+            self._model.sort(col, self._sort_order)
+
     def focus_path_input(self) -> None:
         """Enter path-edit mode (Cmd+G)."""
         self._breadcrumb.focus_editor()
@@ -485,8 +512,29 @@ class RemotePanel(QWidget):
         self._sftp = sftp
         self._empty_state.hide()
 
+    def _cleanup_edit_sessions(self) -> None:
+        """Stop all file watchers and remove temp directories."""
+        import shutil
+        for tmp_path, session in list(self._edit_sessions.items()):
+            watcher = session.get("watcher")
+            if watcher:
+                watcher.fileChanged.disconnect()
+                watcher.removePath(tmp_path)
+            timer = session.get("timer")
+            if timer:
+                timer.stop()
+            tmp_dir = session.get("tmp_dir")
+            if tmp_dir:
+                try:
+                    shutil.rmtree(tmp_dir, ignore_errors=True)
+                except Exception:
+                    pass
+        self._edit_sessions.clear()
+        self._edit_watchers.clear()
+
     def set_disconnected(self) -> None:
         """Called on disconnect — clear the model and show the empty state."""
+        self._cleanup_edit_sessions()
         self._sftp = None
         self._cwd = "/"
         self._breadcrumb.set_path("/")
@@ -561,12 +609,6 @@ class RemotePanel(QWidget):
         self._skeleton.hide()
         self._cwd = path
         self._breadcrumb.set_path(path)
-
-        # Reset sort state so a fresh directory is not misleadingly sorted.
-        # The sort indicator from the previous directory would persist otherwise.
-        self._sort_col = -1
-        self._sort_order = Qt.SortOrder.AscendingOrder
-        self._table.horizontalHeader().setSortIndicator(-1, Qt.SortOrder.AscendingOrder)
 
         # Prepend ".." when not at root so the user can navigate up
         if path != "/":
@@ -1021,18 +1063,17 @@ class RemotePanel(QWidget):
     def _do_edit_remote(self, entry: RemoteEntry) -> None:
         """Download to a temp file, open in the default editor, and watch for saves."""
         import os as _os
-        import subprocess
         import tempfile
-        from PySide6.QtCore import QFileSystemWatcher
 
         self.status_message.emit(f"Opening {entry.name}…")
 
         tmp_dir = tempfile.mkdtemp(prefix="sftp-ui-edit-")
         tmp_path = _os.path.join(tmp_dir, entry.name)
+        remote_path = entry.path
 
-        def _download():
+        def _download() -> None:
             try:
-                with self._sftp.open_remote(entry.path, "rb") as src:
+                with self._sftp.open_remote(remote_path, "rb") as src:
                     with open(tmp_path, "wb") as dst:
                         while True:
                             chunk = src.read(256 * 1024)
@@ -1043,41 +1084,70 @@ class RemotePanel(QWidget):
                 self.status_message.emit(f"Download for edit failed: {exc}")
                 return
 
-            subprocess.Popen(["open", tmp_path])
-            self.status_message.emit(f"Editing {entry.name} — save the file to upload changes")
-
-            watcher = QFileSystemWatcher([tmp_path])
-            last_mtime = [_os.path.getmtime(tmp_path)]
-
-            def _on_changed(_path: str) -> None:
-                try:
-                    mtime = _os.path.getmtime(_path)
-                    if mtime == last_mtime[0]:
-                        return
-                    last_mtime[0] = mtime
-                except OSError:
-                    return
-                self.status_message.emit(f"Uploading {entry.name}…")
-
-                def _upload() -> None:
-                    try:
-                        with open(_path, "rb") as src:
-                            with self._sftp.open_remote(entry.path, "wb") as dst:
-                                while True:
-                                    chunk = src.read(256 * 1024)
-                                    if not chunk:
-                                        break
-                                    dst.write(chunk)
-                        self.status_message.emit(f"Saved {entry.name}")
-                    except Exception as exc:
-                        self.status_message.emit(f"Save failed: {exc}")
-
-                threading.Thread(target=_upload, daemon=True).start()
-
-            watcher.fileChanged.connect(_on_changed)
-            self._edit_watchers.append(watcher)
+            # Signal main thread to create watcher and launch editor
+            self._edit_ready.emit(tmp_path, remote_path, entry.name, tmp_dir)
 
         threading.Thread(target=_download, daemon=True).start()
+
+    # Signal bridge for edit-ready (background thread → main thread)
+    _edit_ready = Signal(str, str, str, str)  # tmp_path, remote_path, name, tmp_dir
+
+    def _on_edit_ready(self, tmp_path: str, remote_path: str, name: str, tmp_dir: str) -> None:
+        """Main-thread slot: create watcher, open editor, set up debounced upload."""
+        import os as _os
+        from PySide6.QtCore import QFileSystemWatcher, QTimer
+        from sftp_ui.core.platform_utils import open_with_editor
+
+        open_with_editor(tmp_path)
+        self.status_message.emit(f"Editing {name} — save the file to upload changes")
+
+        watcher = QFileSystemWatcher([tmp_path], parent=self)
+        debounce_timer = QTimer(self)
+        debounce_timer.setSingleShot(True)
+        debounce_timer.setInterval(500)
+
+        session = {
+            "watcher": watcher,
+            "remote_path": remote_path,
+            "timer": debounce_timer,
+            "tmp_dir": tmp_dir,
+            "name": name,
+        }
+        self._edit_sessions[tmp_path] = session
+        self._edit_watchers.append(watcher)
+
+        def _on_changed(changed_path: str) -> None:
+            # Re-add path to watcher (atomic-save editors delete + recreate)
+            if changed_path not in watcher.files():
+                if _os.path.exists(changed_path):
+                    watcher.addPath(changed_path)
+
+            # Debounce: restart timer on each change event
+            debounce_timer.stop()
+            debounce_timer.start()
+
+        def _do_upload() -> None:
+            def _upload() -> None:
+                try:
+                    if self._sftp is None:
+                        self.status_message.emit(f"Cannot save {name}: disconnected")
+                        return
+                    with open(tmp_path, "rb") as src:
+                        with self._sftp.open_remote(remote_path, "wb") as dst:
+                            while True:
+                                chunk = src.read(256 * 1024)
+                                if not chunk:
+                                    break
+                                dst.write(chunk)
+                    self.status_message.emit(f"Saved {name}")
+                except Exception as exc:
+                    self.status_message.emit(f"Save failed: {exc}")
+
+            self.status_message.emit(f"Uploading {name}…")
+            threading.Thread(target=_upload, daemon=True).start()
+
+        watcher.fileChanged.connect(_on_changed)
+        debounce_timer.timeout.connect(_do_upload)
 
     def _show_info(self, entry: RemoteEntry) -> None:
         dt = datetime.datetime.fromtimestamp(entry.mtime).strftime("%Y-%m-%d %H:%M:%S")
@@ -1137,14 +1207,43 @@ class _DropOverlay(QWidget):
 
 # ── Drop-enabled table ─────────────────────────────────────────────────────────
 
+REMOTE_ENTRIES_MIME = "application/x-sftp-ui-remote-entries"
+
+
 class _DropTable(QTableView):
     def __init__(self, panel: RemotePanel) -> None:
         super().__init__()
         self._panel = panel
         self.setAcceptDrops(True)
-        self.setDragDropMode(QAbstractItemView.DragDropMode.DropOnly)
+        self.setDragEnabled(True)
+        self.setDragDropMode(QAbstractItemView.DragDropMode.DragDrop)
+        self.setDefaultDropAction(Qt.DropAction.CopyAction)
 
         self._drop_overlay = _DropOverlay(self.viewport())
+
+    # ── Drag out (remote → local) ─────────────────────────────────────────────
+
+    def mimeData(self, indexes) -> QMimeData:
+        """Serialize selected remote entries for drag to local panel."""
+        import json
+        seen_rows: set[int] = set()
+        entries: list[dict] = []
+        for idx in indexes:
+            if idx.row() in seen_rows:
+                continue
+            seen_rows.add(idx.row())
+            entry = self._panel._model.entry(idx.row())
+            if entry.name == "..":
+                continue
+            entries.append({
+                "name": entry.name,
+                "path": entry.path,
+                "is_dir": entry.is_dir,
+                "size": entry.size,
+            })
+        mime = QMimeData()
+        mime.setData(REMOTE_ENTRIES_MIME, json.dumps(entries).encode())
+        return mime
 
     def _show_overlay(self) -> None:
         self._drop_overlay.setGeometry(self.viewport().rect())
@@ -1152,12 +1251,12 @@ class _DropTable(QTableView):
         self._drop_overlay.raise_()
 
     def dragEnterEvent(self, event) -> None:
-        if event.mimeData().hasUrls():
+        if event.mimeData().hasUrls() or event.mimeData().hasFormat(REMOTE_ENTRIES_MIME):
             self._show_overlay()
             event.acceptProposedAction()
 
     def dragMoveEvent(self, event) -> None:
-        if event.mimeData().hasUrls():
+        if event.mimeData().hasUrls() or event.mimeData().hasFormat(REMOTE_ENTRIES_MIME):
             # Highlight a directory row when hovering over it so the user knows
             # files will be dropped into that subdirectory instead of _cwd.
             idx = self.indexAt(event.position().toPoint())

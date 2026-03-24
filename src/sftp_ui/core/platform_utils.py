@@ -77,6 +77,21 @@ def open_in_file_manager(path: str) -> None:
             continue
 
 
+def open_with_editor(path: str) -> None:
+    """Open *path* in the OS default editor / associated application.
+
+    * macOS   → ``open <path>``
+    * Windows → ``os.startfile(path)``
+    * Linux   → ``xdg-open <path>``
+    """
+    if PLATFORM == "darwin":
+        subprocess.Popen(["open", path])
+    elif PLATFORM == "win32":
+        os.startfile(path)  # type: ignore[attr-defined]
+    else:
+        subprocess.Popen(["xdg-open", path])
+
+
 def file_manager_action_label(is_dir: bool = False) -> str:  # noqa: ARG001
     """
     Return a human-readable "Open in …" label for the context menu,

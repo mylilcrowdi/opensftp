@@ -139,6 +139,17 @@ class TransferQueue:
                 self.on_worker_error(exc)
             return
 
+        # Mutable reference so reconnect_callback can swap the engine
+        eng = [engine]
+
+        def reconnect_cb() -> None:
+            """Close the dead engine and create a fresh one."""
+            try:
+                eng[0]._sftp.close()
+            except Exception:
+                pass
+            eng[0] = self._engine_factory()
+
         try:
             while not self._stop_event.is_set():
                 # Block while the queue is paused (but wake quickly on stop)
@@ -172,20 +183,22 @@ class TransferQueue:
 
                 try:
                     if job.direction == TransferDirection.DOWNLOAD:
-                        engine.download_with_retry(
+                        eng[0].download_with_retry(
                             job,
                             progress_callback=_progress,
                             cancel_flag=cancel_flag,
                             max_retries=self._max_retries,
                             retry_delay=self._retry_delay,
+                            reconnect_callback=reconnect_cb,
                         )
                     else:
-                        engine.upload_with_retry(
+                        eng[0].upload_with_retry(
                             job,
                             progress_callback=_progress,
                             cancel_flag=cancel_flag,
                             max_retries=self._max_retries,
                             retry_delay=self._retry_delay,
+                            reconnect_callback=reconnect_cb,
                         )
                 except TransferError:
                     pass
@@ -198,6 +211,6 @@ class TransferQueue:
                     self.on_job_cancelled(job)
         finally:
             try:
-                engine._sftp.close()
+                eng[0]._sftp.close()
             except Exception:
                 pass

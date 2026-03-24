@@ -7,6 +7,7 @@ Fields:
   last_local_path      — last visited local directory
   last_connection_id   — UUID of the connection last used
   last_remote_paths    — per-connection-ID last visited remote path
+  sort_state           — per-panel sort column + order (persists across reconnects)
 
 Edge-case policy
 ----------------
@@ -35,6 +36,13 @@ Auto-reconnect:
     the same as "was connected", so the auto-reconnect fires.
   - A single reconnect attempt is made; if it fails, was_connected is
     cleared so subsequent startups do not keep retrying a dead server.
+
+Sort state:
+  - Stored per panel ID ("remote", "local").
+  - Each entry is {"col": int, "order": int} where col=-1 means no sort.
+  - order 0 = ascending (Qt.SortOrder.AscendingOrder), 1 = descending.
+  - Restored after reconnect so the user's preferred sort column persists
+    across sessions without having to click the header again.
 """
 from __future__ import annotations
 
@@ -56,6 +64,8 @@ class UIState:
         self.last_remote_paths: dict[str, str] = {}   # conn_id → remote path
         self.was_connected: bool = False
         self.column_widths: dict[str, list[int]] = {}   # panel_id → [col_width, ...]
+        # panel_id → {"col": int, "order": int}  (-1 col = neutral / no sort)
+        self.sort_state: dict[str, dict[str, int]] = {}
         self._load()
 
     # ── Accessors ────────────────────────────────────────────────────────────
@@ -103,6 +113,25 @@ class UIState:
     def get_column_widths(self, panel: str) -> list[int]:
         return self.column_widths.get(panel, [])
 
+    def set_sort_state(self, panel: str, col: int, order: int) -> None:
+        """Persist the sort column and order for *panel*.
+
+        Args:
+            panel: Panel identifier, e.g. ``"remote"`` or ``"local"``.
+            col:   Column index, or ``-1`` for no sort (natural server order).
+            order: ``0`` for ascending, ``1`` for descending
+                   (matches ``Qt.SortOrder`` integer values).
+        """
+        self.sort_state[panel] = {"col": col, "order": order}
+        self.save()
+
+    def get_sort_state(self, panel: str) -> tuple[int, int]:
+        """Return ``(col, order)`` for *panel*, defaulting to ``(-1, 0)``."""
+        entry = self.sort_state.get(panel, {})
+        col   = int(entry.get("col",   -1))
+        order = int(entry.get("order",  0))
+        return col, order
+
     # ── Persistence ──────────────────────────────────────────────────────────
 
     def save(self) -> None:
@@ -114,6 +143,7 @@ class UIState:
                 "last_remote_paths": self.last_remote_paths,
                 "was_connected": self.was_connected,
                 "column_widths": self.column_widths,
+                "sort_state": self.sort_state,
             }
             self._path.write_text(json.dumps(data, indent=2), encoding="utf-8")
         except OSError:
@@ -140,5 +170,19 @@ class UIState:
                         except (TypeError, ValueError):
                             pass  # skip rows with non-numeric entries
                 self.column_widths = safe
+
+            ss = data.get("sort_state", {})
+            if isinstance(ss, dict):
+                safe_ss: dict[str, dict[str, int]] = {}
+                for k, v in ss.items():
+                    if isinstance(v, dict):
+                        try:
+                            safe_ss[str(k)] = {
+                                "col":   int(v.get("col",   -1)),
+                                "order": int(v.get("order",  0)),
+                            }
+                        except (TypeError, ValueError):
+                            pass  # skip malformed entries
+                self.sort_state = safe_ss
         except (json.JSONDecodeError, OSError, AttributeError):
             pass  # corrupt file — start from defaults

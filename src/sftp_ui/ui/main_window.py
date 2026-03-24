@@ -57,6 +57,9 @@ class _Signals(QObject):
     connect_failed         = Signal(str)
     show_overwrite_dialog  = Signal(list)      # list[str] conflict filenames → ask user
     set_sftp               = Signal(object)    # SFTPClient — hand-off to remote panel (main thread)
+    reconnecting           = Signal()          # health-check detected drop
+    reconnected            = Signal()          # reconnection succeeded
+    reconnect_failed       = Signal(str)       # reconnection failed after retries
 
 
 # ── MainWindow ────────────────────────────────────────────────────────────────
@@ -80,6 +83,10 @@ class MainWindow(QMainWindow):
         self._ui_state = UIState()
         self._active_conn: Optional[Connection] = None
         self._show_connect_error_dialog: bool = True   # False during auto-reconnect
+
+        # Auto-reconnect state
+        self._auto_reconnect: bool = False      # True while connected; False on intentional disconnect
+        self._reconnecting: bool = False         # prevents concurrent reconnect attempts
 
         # Overwrite-conflict resolution — background thread blocks on this event
         # while the main thread shows the dialog and sets the result.
@@ -139,6 +146,11 @@ class MainWindow(QMainWindow):
         self._refresh_debounce.setSingleShot(True)
         self._refresh_debounce.setInterval(300)
         self._refresh_debounce.timeout.connect(self._remote_panel.refresh)
+
+        # Connection health check — polls is_alive() every 10 s
+        self._health_timer = QTimer(self)
+        self._health_timer.setInterval(10_000)
+        self._health_timer.timeout.connect(self._check_connection_health)
 
         root.addWidget(content, stretch=1)
 
@@ -227,6 +239,7 @@ class MainWindow(QMainWindow):
     def _connect_signals(self) -> None:
         self._remote_panel.upload_requested.connect(self._on_upload_requested)
         self._remote_panel.download_requested.connect(self._on_download_requested)
+        self._local_panel.download_drop_requested.connect(self._on_download_drop)
         self._remote_panel.status_message.connect(self._status.showMessage)
         self._local_panel.status_message.connect(self._status.showMessage)
         self._refresh_btn.clicked.connect(self._remote_panel.refresh)
@@ -249,6 +262,9 @@ class MainWindow(QMainWindow):
         sig.connect_failed.connect(self._on_connect_failed)
         sig.show_overwrite_dialog.connect(self._on_show_overwrite_dialog)
         sig.set_sftp.connect(self._remote_panel.set_sftp)
+        sig.reconnecting.connect(self._on_reconnecting)
+        sig.reconnected.connect(self._on_reconnected)
+        sig.reconnect_failed.connect(self._on_reconnect_failed)
 
         # Keyboard shortcuts
         QShortcut(QKeySequence("Ctrl+R"), self).activated.connect(self._remote_panel.refresh)
@@ -258,12 +274,26 @@ class MainWindow(QMainWindow):
         QShortcut(QKeySequence("Ctrl+Shift+."), self).activated.connect(self._remote_panel.toggle_hidden)
         QShortcut(QKeySequence("Ctrl+G"), self).activated.connect(self._remote_panel.focus_path_input)
         QShortcut(QKeySequence("Ctrl+B"), self).activated.connect(self._toggle_bookmarks_bar)
+        QShortcut(QKeySequence("Ctrl+F"), self).activated.connect(self._on_search)
         QShortcut(QKeySequence("F1"),          self).activated.connect(self._show_shortcuts_dialog)
         QShortcut(QKeySequence("Ctrl+?"),      self).activated.connect(self._show_shortcuts_dialog)
 
         self._remote_panel.column_widths_changed.connect(
             lambda widths: self._ui_state.set_column_widths("remote", widths)
         )
+
+        # Persist sort state for both panels
+        self._remote_panel.sort_state_changed.connect(
+            lambda col, order: self._ui_state.set_sort_state("remote", col, order)
+        )
+        self._local_panel.sort_state_changed.connect(
+            lambda col, order: self._ui_state.set_sort_state("local", col, order)
+        )
+
+        # Restore local panel sort immediately (it has data at startup)
+        local_sort_col, local_sort_order = self._ui_state.get_sort_state("local")
+        if local_sort_col != -1:
+            self._local_panel.restore_sort_state(local_sort_col, local_sort_order)
 
     # ── Session restore ───────────────────────────────────────────────────────
 
@@ -389,6 +419,9 @@ class MainWindow(QMainWindow):
 
     def _on_connect_success(self) -> None:
         self._ui_state.set_was_connected(True)
+        self._auto_reconnect = True
+        self._reconnecting = False
+        self._health_timer.start()
         # Record last_connected timestamp for connection manager display
         if self._active_conn:
             try:
@@ -404,6 +437,11 @@ class MainWindow(QMainWindow):
         saved_widths = self._ui_state.get_column_widths("remote")
         if saved_widths:
             self._remote_panel.set_column_widths(saved_widths)
+
+        # Restore sort state — applied before data arrives so _apply_entries
+        # will honour the saved column on the first listing.
+        remote_sort_col, remote_sort_order = self._ui_state.get_sort_state("remote")
+        self._remote_panel.restore_sort_state(remote_sort_col, remote_sort_order)
 
     def _on_connect_failed(self, msg: str) -> None:
         self._ui_state.set_was_connected(False)
@@ -467,6 +505,8 @@ class MainWindow(QMainWindow):
             if reply != QMessageBox.StandardButton.Yes:
                 return
 
+        self._auto_reconnect = False
+        self._health_timer.stop()
         self._ui_state.set_was_connected(False)
         self._status_dot.set_idle()
         if self._queue:
@@ -483,6 +523,60 @@ class MainWindow(QMainWindow):
         self._refresh_btn.setEnabled(False)
         self._sync_btn.setEnabled(False)
         self._status.showMessage("Disconnected")
+
+    # ── Auto-reconnect ────────────────────────────────────────────────────────
+
+    def _check_connection_health(self) -> None:
+        """Called every 10 s by _health_timer.  Triggers reconnect on drop."""
+        if (
+            self._sftp is None
+            or not self._auto_reconnect
+            or self._reconnecting
+        ):
+            return
+        if self._sftp.is_alive():
+            return
+
+        self._reconnecting = True
+        self._signals.reconnecting.emit()
+        threading.Thread(
+            target=self._do_reconnect, daemon=True, name="reconnect"
+        ).start()
+
+    def _do_reconnect(self) -> None:
+        """Background thread: attempt reconnection with exponential backoff."""
+        delays = [2, 4, 8]  # seconds between attempts
+        last_err = ""
+        for attempt, delay in enumerate(delays, 1):
+            try:
+                self._sftp.reconnect(self._active_conn)
+                # Success — re-create the queue with a fresh connection
+                self._setup_queue(self._active_conn)
+                self._signals.set_sftp.emit(self._sftp)
+                self._signals.reconnected.emit()
+                self._reconnecting = False
+                return
+            except Exception as exc:
+                last_err = str(exc)
+                if attempt < len(delays):
+                    import time
+                    time.sleep(delay)
+
+        self._signals.reconnect_failed.emit(last_err)
+        self._reconnecting = False
+
+    def _on_reconnecting(self) -> None:
+        self._status_dot.set_idle()  # amber-ish neutral state
+        self._status.showMessage("⟳ Reconnecting…")
+
+    def _on_reconnected(self) -> None:
+        self._status_dot.set_connected()
+        self._status.showMessage("Reconnected")
+        self._remote_panel.refresh()
+
+    def _on_reconnect_failed(self, error: str) -> None:
+        self._status_dot.set_failed()
+        self._status.showMessage(f"Connection lost: {error}")
 
     def _on_new_connection(self) -> None:
         dlg = ConnectionDialog(self, store=self._store)
@@ -882,6 +976,85 @@ class MainWindow(QMainWindow):
 
         threading.Thread(target=_expand_and_queue_download, daemon=True).start()
 
+    def _on_download_drop(self, entry_dicts: list, local_dir: str) -> None:
+        """Handle drag-drop from remote panel to local panel (download)."""
+        if not self._queue:
+            return
+        from sftp_ui.core.sftp_client import RemoteEntry
+        entries = [
+            RemoteEntry(
+                name=d["name"], path=d["path"],
+                is_dir=d["is_dir"], size=d.get("size", 0), mtime=0,
+            )
+            for d in entry_dicts
+        ]
+        # Reuse the download handler but with pre-selected local_dir
+        # (skip QFileDialog since user chose the target by dropping)
+        self._do_download_to(entries, local_dir)
+
+    def _do_download_to(self, entries, local_dir: str) -> None:
+        """Download entries to local_dir (shared by drag-drop and menu download)."""
+        def _expand_and_queue():
+            conn = self._active_conn
+            if conn is None:
+                return
+
+            expand_client = SFTPClient()
+            try:
+                expand_client.connect(conn)
+            except Exception as exc:
+                self._signals.status.emit(f"Download preparation failed: {exc}")
+                return
+
+            try:
+                jobs: list[TransferJob] = []
+                for entry in entries:
+                    if not entry.is_dir:
+                        local_path = str(Path(local_dir) / entry.name)
+                        job = TransferJob(
+                            local_path=local_path,
+                            remote_path=entry.path,
+                            direction=TransferDirection.DOWNLOAD,
+                        )
+                        job.total_bytes = entry.size
+                        jobs.append(job)
+                    else:
+                        try:
+                            remote_files = expand_client.walk(entry.path)
+                        except Exception as exc:
+                            self._signals.status.emit(f"Could not list {entry.name}: {exc}")
+                            continue
+                        base = entry.name
+                        for f in remote_files:
+                            rel = PurePosixPath(f.path).relative_to(entry.path)
+                            local_path = str(Path(local_dir) / base / rel)
+                            os.makedirs(os.path.dirname(local_path), exist_ok=True)
+                            job = TransferJob(
+                                local_path=local_path,
+                                remote_path=f.path,
+                                direction=TransferDirection.DOWNLOAD,
+                            )
+                            job.total_bytes = f.size
+                            jobs.append(job)
+
+                if not jobs:
+                    self._signals.status.emit("No files found to download.")
+                    return
+
+                for job in jobs:
+                    self._signals.job_enqueued.emit(job)
+                for job in jobs:
+                    self._queue.enqueue(job)
+
+                n = len(jobs)
+                self._signals.status.emit(
+                    f"Downloading {n} file{'s' if n != 1 else ''}…"
+                )
+            finally:
+                expand_client.close()
+
+        threading.Thread(target=_expand_and_queue, daemon=True).start()
+
     def _on_job_done(self, job) -> None:
         self._transfer_panel.job_finished(job)
         if self._queue and self._queue.pending_count() == 0:
@@ -945,6 +1118,16 @@ class MainWindow(QMainWindow):
         )
 
     # ── Keyboard shortcut cheatsheet ──────────────────────────────────────────
+
+    def _on_search(self) -> None:
+        """Open the remote search dialog (Ctrl+F)."""
+        if self._sftp is None:
+            self._status.showMessage("Connect to a server first")
+            return
+        from sftp_ui.ui.dialogs.search_dialog import SearchDialog
+        dlg = SearchDialog(self._sftp, self._remote_panel._cwd, parent=self)
+        dlg.navigate_to.connect(self._remote_panel.navigate)
+        dlg.show()
 
     def _show_shortcuts_dialog(self) -> None:
         """Open the keyboard shortcut help overlay (F1 / Ctrl+?)."""

@@ -125,10 +125,12 @@ class SFTPClient:
             max_packet_size=32768,          # SSH packet payload limit (server cap)
         )
 
-        # Send a keepalive every 30 s so the connection survives idle periods.
-        # Without this most servers (and NAT routers) drop the TCP session after
-        # ~2 min of silence, causing mysterious "broken pipe" errors on the next op.
-        transport.set_keepalive(30)
+        # Send periodic keepalive packets so the connection survives idle periods.
+        # Without keepalives most servers (and NAT routers) drop the TCP session
+        # after ~2 min of silence, causing mysterious "broken pipe" errors.
+        # A value of 0 disables keepalives entirely (user opt-out).
+        if conn.keepalive_interval > 0:
+            transport.set_keepalive(conn.keepalive_interval)
 
     # ── tunnel helpers ───────────────────────────────────────────────────────
 
@@ -208,6 +210,30 @@ class SFTPClient:
 
     def is_connected(self) -> bool:
         return self._sftp is not None
+
+    def is_alive(self) -> bool:
+        """Return True if the SSH transport is still active.
+
+        This checks the underlying paramiko transport, which tracks TCP
+        liveness via keepalive packets.  Returns False on any error so
+        callers can safely use this as a health-check predicate.
+        """
+        try:
+            if self._ssh is None:
+                return False
+            transport = self._ssh.get_transport()
+            return transport is not None and transport.is_active()
+        except Exception:
+            return False
+
+    def reconnect(self, conn: Connection) -> None:
+        """Close the current session and establish a fresh one.
+
+        Any errors from ``connect()`` propagate to the caller — the
+        connection is left in a closed state on failure.
+        """
+        self.close()
+        self.connect(conn)
 
     def __enter__(self) -> "SFTPClient":
         return self

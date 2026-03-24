@@ -216,6 +216,26 @@ class ConnectionDialog(QDialog):
 
         self._use_agent = QCheckBox("Use SSH Agent (ssh-agent / macOS Keychain / Pageant)")
 
+        # Keepalive spinbox: 0 = disabled, 1–3600 s
+        keepalive_row = QHBoxLayout()
+        keepalive_row.setSpacing(6)
+        self._keepalive_interval = QSpinBox()
+        self._keepalive_interval.setRange(0, 3600)
+        self._keepalive_interval.setValue(30)
+        self._keepalive_interval.setSuffix(" s")
+        self._keepalive_interval.setFixedWidth(100)
+        self._keepalive_interval.setFocusPolicy(Qt.FocusPolicy.StrongFocus)
+        self._keepalive_interval.setToolTip(
+            "Send a keepalive packet to the server every N seconds.\n"
+            "Prevents the server (and NAT routers) from dropping idle connections.\n"
+            "Set to 0 to disable keepalives entirely."
+        )
+        keepalive_hint = QLabel("seconds  (0 = disabled)")
+        keepalive_hint.setStyleSheet("color: palette(mid); font-size: 11px;")
+        keepalive_row.addWidget(self._keepalive_interval)
+        keepalive_row.addWidget(keepalive_hint)
+        keepalive_row.addStretch()
+
         sftp_form.addRow("Host *", self._host)
         sftp_form.addRow("User *", self._user)
         sftp_form.addRow("Port", self._port)
@@ -223,6 +243,7 @@ class ConnectionDialog(QDialog):
         sftp_form.addRow("Key Passphrase", _make_password_row(self._key_passphrase))
         sftp_form.addRow("Password", _make_password_row(self._password))
         sftp_form.addRow("", self._use_agent)
+        sftp_form.addRow("Keepalive", keepalive_row)
 
         # ── SSH tunnel section ────────────────────────────────────────────────
         self._tunnel_checkbox = QCheckBox("Use SSH Tunnel (Jump Host)")
@@ -412,6 +433,7 @@ class ConnectionDialog(QDialog):
             if conn.password:
                 self._password.setText(conn.password)
             self._use_agent.setChecked(conn.use_agent)
+            self._keepalive_interval.setValue(conn.keepalive_interval)
 
             if conn.tunnel is not None:
                 self._tunnel_checkbox.setChecked(True)
@@ -592,6 +614,7 @@ class ConnectionDialog(QDialog):
             protocol="sftp",
             id=self._conn.id if self._conn else str(uuid.uuid4()),
             last_connected=self._conn.last_connected if self._conn else 0.0,
+            keepalive_interval=self._keepalive_interval.value(),
         )
 
     def _accept_cloud(self, protocol: str) -> Connection:

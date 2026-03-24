@@ -4,18 +4,18 @@ build-backend = "briefcase.integrations.build_system"
 
 [tool.briefcase]
 requires-python = ">=3.11"
-project_name = "SFTP UI"
-bundle = "com.sftpui"
+project_name = "openSFTP"
+bundle = "de.renemurrell.opensftp"
 version = "0.1.0"
-url = "https://github.com/mylilcrowdi/sftp-ui"
+url = "https://renemurrell.de/software/opensftp"
 license.text = "MIT"
-author = "async"
-author_email = "asktheinternet069@gmail.com"
+author = "René Murrell"
+author_email = "ich@renemurrell.de"
 
 [tool.briefcase.app.sftp-ui]
-formal_name = "SFTP UI"
-description = "A modern, native SFTP client"
-long_description = "Dual-pane SFTP client with transfer queue, resume support and theming."
+formal_name = "openSFTP"
+description = "Dual-pane SFTP client — fast, native, open source"
+long_description = "Dual-pane SFTP client with parallel transfers, folder sync, session restore, and 5 themes. Free core (MIT). Pro build available."
 sources = ["src/sftp_ui"]
 test_sources = ["tests"]
 

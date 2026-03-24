@@ -191,23 +191,24 @@ class TestListdirDone:
         assert ".hidden" not in names
         assert "visible.txt" in names
 
-    def test_sort_reset_after_listdir(self, panel):
-        """Sort state is reset to neutral when a new directory listing arrives.
+    def test_sort_persists_across_listdir(self, panel):
+        """Sort state is preserved when navigating between directories.
 
-        A stale sort arrow from directory A must not carry over to directory B.
+        Column sort persistence (roadmap #7): the user's chosen sort column
+        must survive navigation so the panel looks consistent across dirs.
         """
         from PySide6.QtCore import Qt
-        # Simulate a pre-existing sort from a previous directory
+        # Simulate a pre-existing sort chosen by the user
         panel._sort_col = 0
         panel._sort_order = Qt.SortOrder.AscendingOrder
         panel._on_listdir_done("/remote", [_entry("z.txt"), _entry("a.txt"), _entry("m.txt")], 0)
-        # After loading a new directory the sort state must be neutral (-1)
-        assert panel._sort_col == -1
+        # Sort state is preserved — col=0, ascending
+        assert panel._sort_col == 0
         assert panel._sort_order == Qt.SortOrder.AscendingOrder
-        # Entries should be in server order (z, a, m — no sort applied)
+        # Entries must be sorted by name (ascending): a, m, z
         names = [panel._model.entry(i).name for i in range(panel._model.rowCount())
                  if panel._model.entry(i).name != ".."]
-        assert names == ["z.txt", "a.txt", "m.txt"]
+        assert names == ["a.txt", "m.txt", "z.txt"]
 
 
 # ── _on_listdir_error() ───────────────────────────────────────────────────────

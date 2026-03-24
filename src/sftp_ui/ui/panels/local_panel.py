@@ -25,9 +25,14 @@ from PySide6.QtWidgets import (
 from sftp_ui.core.platform_utils import file_manager_action_label, open_in_file_manager
 
 
+REMOTE_ENTRIES_MIME = "application/x-sftp-ui-remote-entries"
+
+
 class LocalPanel(QWidget):
     path_changed = Signal(str)
     status_message = Signal(str)
+    download_drop_requested = Signal(list, str)  # (entries_dicts, local_dir)
+    sort_state_changed = Signal(int, int)        # (col, order_int)  — -1 col means neutral
 
     def __init__(self, initial_path: Optional[str] = None, parent=None) -> None:
         super().__init__(parent)
@@ -84,7 +89,8 @@ class LocalPanel(QWidget):
         self._tree.header().sectionClicked.connect(self._on_header_click)
         self._tree.setSelectionMode(QAbstractItemView.SelectionMode.ExtendedSelection)
         self._tree.setDragEnabled(True)
-        self._tree.setDragDropMode(QAbstractItemView.DragDropMode.DragOnly)
+        self._tree.setDragDropMode(QAbstractItemView.DragDropMode.DragDrop)
+        self._tree.setAcceptDrops(True)
         self._tree.itemDoubleClicked.connect(self._on_double_click)
         self._tree.setContextMenuPolicy(Qt.ContextMenuPolicy.CustomContextMenu)
         self._tree.customContextMenuRequested.connect(self._on_context_menu)
@@ -192,6 +198,27 @@ class LocalPanel(QWidget):
             hdr.setSortIndicator(self._sort_col, self._sort_order)
             self._tree.setSortingEnabled(True)
             self._tree.sortByColumn(self._sort_col, self._sort_order)
+            self._tree.setSortingEnabled(False)
+
+        # Persist new sort preference so it survives app restarts
+        self.sort_state_changed.emit(self._sort_col, self._sort_order.value)
+
+    def restore_sort_state(self, col: int, order: int) -> None:
+        """Restore a persisted sort state on startup.
+
+        Args:
+            col:   Column index to sort by, or ``-1`` for natural order.
+            order: ``0`` for ascending, ``1`` for descending.
+        """
+        hdr = self._tree.header()
+        self._sort_col   = col
+        self._sort_order = Qt.SortOrder(order)
+        if col == -1:
+            hdr.setSortIndicator(-1, Qt.SortOrder.AscendingOrder)
+        else:
+            hdr.setSortIndicator(col, self._sort_order)
+            self._tree.setSortingEnabled(True)
+            self._tree.sortByColumn(col, self._sort_order)
             self._tree.setSortingEnabled(False)
 
     def _on_double_click(self, item: QTreeWidgetItem) -> None:
@@ -395,16 +422,74 @@ class LocalPanel(QWidget):
 
 # ── Drag tree ──────────────────────────────────────────────────────────────────
 
+class _LocalDropOverlay(QWidget):
+    """Semi-transparent overlay shown when dragging remote entries over local panel."""
+
+    def __init__(self, parent=None) -> None:
+        super().__init__(parent)
+        self.setAttribute(Qt.WidgetAttribute.WA_TransparentForMouseEvents)
+        self.hide()
+
+    def paintEvent(self, event) -> None:
+        from PySide6.QtGui import QPainter, QColor, QFont
+        p = QPainter(self)
+        p.fillRect(self.rect(), QColor(166, 227, 161, 22))  # green tint
+        p.setPen(QColor("#a6e3a1"))
+        p.drawRect(self.rect().adjusted(1, 1, -2, -2))
+        font = QFont()
+        font.setPointSize(13)
+        font.setBold(True)
+        p.setFont(font)
+        p.setPen(QColor("#a6e3a1"))
+        p.drawText(self.rect(), Qt.AlignmentFlag.AlignCenter, "Drop to download")
+        p.end()
+
+
 class _LocalDragTree(QTreeWidget):
     def __init__(self, panel: LocalPanel) -> None:
         super().__init__()
         self._panel = panel
+        self._drop_overlay = _LocalDropOverlay(self.viewport())
 
     def mimeData(self, items):
         paths = self._panel.selected_paths()
         mime = QMimeData()
         mime.setUrls([QUrl.fromLocalFile(p) for p in paths])
         return mime
+
+    # ── Drop acceptance (remote → local) ──────────────────────────────────────
+
+    def dragEnterEvent(self, event) -> None:
+        if event.mimeData().hasFormat(REMOTE_ENTRIES_MIME):
+            self._drop_overlay.setGeometry(self.viewport().rect())
+            self._drop_overlay.show()
+            self._drop_overlay.raise_()
+            event.acceptProposedAction()
+        else:
+            super().dragEnterEvent(event)
+
+    def dragMoveEvent(self, event) -> None:
+        if event.mimeData().hasFormat(REMOTE_ENTRIES_MIME):
+            event.acceptProposedAction()
+        else:
+            super().dragMoveEvent(event)
+
+    def dragLeaveEvent(self, event) -> None:
+        self._drop_overlay.hide()
+        super().dragLeaveEvent(event)
+
+    def dropEvent(self, event) -> None:
+        self._drop_overlay.hide()
+        mime = event.mimeData()
+        if mime.hasFormat(REMOTE_ENTRIES_MIME):
+            import json
+            raw = bytes(mime.data(REMOTE_ENTRIES_MIME))
+            entries = json.loads(raw.decode())
+            if entries:
+                self._panel.download_drop_requested.emit(entries, self._panel._cwd)
+            event.acceptProposedAction()
+        else:
+            super().dropEvent(event)
 
     def keyPressEvent(self, event) -> None:
         key = event.key()
