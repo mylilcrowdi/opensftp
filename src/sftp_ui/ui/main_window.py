@@ -239,6 +239,7 @@ class MainWindow(QMainWindow):
     def _connect_signals(self) -> None:
         self._remote_panel.upload_requested.connect(self._on_upload_requested)
         self._remote_panel.download_requested.connect(self._on_download_requested)
+        self._remote_panel.remote_copy_requested.connect(self._on_remote_copy_requested)
         self._local_panel.download_drop_requested.connect(self._on_download_drop)
         self._remote_panel.status_message.connect(self._status.showMessage)
         self._local_panel.status_message.connect(self._status.showMessage)
@@ -991,6 +992,152 @@ class MainWindow(QMainWindow):
         # Reuse the download handler but with pre-selected local_dir
         # (skip QFileDialog since user chose the target by dropping)
         self._do_download_to(entries, local_dir)
+
+    def _on_remote_copy_requested(self, entry_dicts: list, dest_dir: str) -> None:
+        """Handle drag-drop between two remote locations (same server, temp-buffer copy).
+
+        Each source entry is streamed through a local temp directory:
+          1. Download source → temp file (via open_remote stream)
+          2. Upload temp file → destination (via open_remote stream)
+          3. Clean up the temp directory when all copies finish.
+
+        Directories are copied recursively by walking their contents first.
+
+        Args:
+            entry_dicts: Serialised remote entries from the drag MIME payload.
+            dest_dir:    Target directory on the remote server.
+        """
+        conn = self._active_conn
+        if conn is None:
+            self._signals.status.emit("Not connected — cannot copy.")
+            return
+
+        import tempfile
+        import shutil
+        from sftp_ui.core.sftp_client import RemoteEntry
+
+        entries = [
+            RemoteEntry(
+                name=d["name"], path=d["path"],
+                is_dir=d["is_dir"], size=d.get("size", 0), mtime=0,
+            )
+            for d in entry_dicts
+        ]
+
+        def _run() -> None:
+            tmp_dir = tempfile.mkdtemp(prefix="sftp-ui-copy-")
+            try:
+                copy_client = SFTPClient()
+                copy_client.connect(conn)
+            except Exception as exc:
+                self._signals.status.emit(f"Remote copy failed (connect): {exc}")
+                shutil.rmtree(tmp_dir, ignore_errors=True)
+                return
+
+            try:
+                # Collect all (src_remote_path, dst_remote_path, tmp_local_path) triples
+                transfer_items: list[tuple[str, str, str]] = []
+                for entry in entries:
+                    if not entry.is_dir:
+                        tmp_local = os.path.join(tmp_dir, entry.name)
+                        dst_remote = str(PurePosixPath(dest_dir) / entry.name)
+                        transfer_items.append((entry.path, dst_remote, tmp_local))
+                    else:
+                        # Walk the source directory and mirror the tree
+                        try:
+                            remote_files = copy_client.walk(entry.path)
+                        except Exception as exc:
+                            self._signals.status.emit(
+                                f"Cannot list '{entry.name}': {exc}"
+                            )
+                            continue
+                        base_name = entry.name
+                        for f in remote_files:
+                            rel = PurePosixPath(f.path).relative_to(entry.path)
+                            tmp_local = os.path.join(tmp_dir, base_name, str(rel))
+                            os.makedirs(os.path.dirname(tmp_local), exist_ok=True)
+                            dst_remote = str(
+                                PurePosixPath(dest_dir) / base_name / rel
+                            )
+                            transfer_items.append((f.path, dst_remote, tmp_local))
+
+                if not transfer_items:
+                    self._signals.status.emit("Remote copy: nothing to copy.")
+                    return
+
+                n_total = len(transfer_items)
+                total_bytes = sum(
+                    e.size for e in entries if not e.is_dir
+                )
+                self._signals.status.emit(
+                    f"Copying {n_total} file{'s' if n_total != 1 else ''} "
+                    f"to {dest_dir}…"
+                )
+
+                errors: list[str] = []
+                bytes_copied = 0
+
+                for i, (src_remote, dst_remote, tmp_local) in enumerate(
+                    transfer_items, 1
+                ):
+                    try:
+                        # Step 1: ensure destination parent directory exists
+                        dst_parent = str(PurePosixPath(dst_remote).parent)
+                        try:
+                            copy_client.mkdir_p(dst_parent)
+                        except Exception:
+                            pass  # may already exist
+
+                        # Step 2: stream src → tmp_local
+                        os.makedirs(os.path.dirname(tmp_local) or ".", exist_ok=True)
+                        with copy_client.open_remote(src_remote, "rb") as src_fh:
+                            with open(tmp_local, "wb") as loc_fh:
+                                while True:
+                                    chunk = src_fh.read(256 * 1024)
+                                    if not chunk:
+                                        break
+                                    loc_fh.write(chunk)
+
+                        # Step 3: stream tmp_local → dst_remote
+                        with open(tmp_local, "rb") as loc_fh:
+                            with copy_client.open_remote(dst_remote, "wb") as dst_fh:
+                                while True:
+                                    chunk = loc_fh.read(256 * 1024)
+                                    if not chunk:
+                                        break
+                                    dst_fh.write(chunk)
+
+                        file_size = os.path.getsize(tmp_local)
+                        bytes_copied += file_size
+                        mb_done = bytes_copied / (1024 * 1024)
+
+                        self._signals.status.emit(
+                            f"Copying… {i} / {n_total} files "
+                            f"({mb_done:.1f} MB copied)…"
+                        )
+                    except Exception as exc:
+                        errors.append(f"{PurePosixPath(src_remote).name}: {exc}")
+
+                # Final summary
+                if errors:
+                    self._signals.status.emit(
+                        f"Copy finished with {len(errors)} error(s): "
+                        + ", ".join(errors[:3])
+                        + (" …" if len(errors) > 3 else "")
+                    )
+                else:
+                    mb_total = bytes_copied / (1024 * 1024)
+                    self._signals.status.emit(
+                        f"Copied {n_total} file{'s' if n_total != 1 else ''} "
+                        f"({mb_total:.1f} MB) to {dest_dir}"
+                    )
+
+            finally:
+                copy_client.close()
+                shutil.rmtree(tmp_dir, ignore_errors=True)
+                self._signals.refresh_remote.emit()
+
+        threading.Thread(target=_run, daemon=True).start()
 
     def _do_download_to(self, entries, local_dir: str) -> None:
         """Download entries to local_dir (shared by drag-drop and menu download)."""

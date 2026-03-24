@@ -328,6 +328,7 @@ class RemotePanel(QWidget):
     path_changed = Signal(str)
     upload_requested = Signal(list, str)       # (local_paths, remote_dir)
     download_requested = Signal(list)          # list[RemoteEntry]
+    remote_copy_requested = Signal(list, str)  # (entry_dicts, dest_dir) — remote-to-remote copy
     status_message = Signal(str)
     column_widths_changed = Signal(list)   # [w0, w1, w2]
     sort_state_changed = Signal(int, int)  # (col, order_int)  — -1 col means neutral
@@ -1172,16 +1173,66 @@ class RemotePanel(QWidget):
         self.status_message.emit(f"Preparing upload of {n} item(s) to {dest}…")
         self.upload_requested.emit(local_paths, dest)
 
+    def _on_remote_drop(self, entry_dicts: list[dict], target_dir: str) -> None:
+        """Handle drop of remote entries onto another remote location (same server copy).
+
+        Filters out any entry whose path already has ``target_dir`` as its
+        parent (i.e. copying a file to the same directory it lives in) and
+        prevents copying a directory into itself.
+
+        Args:
+            entry_dicts: Serialised remote entries from the drag MIME payload.
+            target_dir:  Destination directory path on the remote server.
+        """
+        import posixpath
+
+        # Guard: nothing to do if target is the same as every entry's parent
+        valid: list[dict] = []
+        for d in entry_dicts:
+            src_parent = posixpath.dirname(d["path"].rstrip("/"))
+            norm_target = target_dir.rstrip("/")
+            # Skip if already in the target directory (no-op copy)
+            if src_parent == norm_target:
+                continue
+            # Skip if trying to copy a directory into itself or a descendant
+            if d["is_dir"] and (
+                norm_target == d["path"].rstrip("/")
+                or norm_target.startswith(d["path"].rstrip("/") + "/")
+            ):
+                self.status_message.emit(
+                    f"Cannot copy '{d['name']}' into itself."
+                )
+                continue
+            valid.append(d)
+
+        if not valid:
+            self.status_message.emit("Nothing to copy — source and destination are the same.")
+            return
+
+        n = len(valid)
+        self.status_message.emit(f"Copying {n} item(s) to {target_dir}…")
+        self.remote_copy_requested.emit(valid, target_dir)
+
 
 # ── Drop overlay ───────────────────────────────────────────────────────────────
 
 class _DropOverlay(QWidget):
-    """Semi-transparent blue highlight shown over the table while a drag hovers."""
+    """Semi-transparent blue highlight shown over the table while a drag hovers.
+
+    The label adjusts to reflect whether the incoming drag is an upload
+    (local → remote) or a remote-to-remote copy.
+    """
 
     def __init__(self, parent=None) -> None:
         super().__init__(parent)
         self.setAttribute(Qt.WidgetAttribute.WA_TransparentForMouseEvents)
+        self._label = "Drop to upload"
         self.hide()
+
+    def set_label(self, text: str) -> None:
+        """Update the centre hint text and trigger a repaint."""
+        self._label = text
+        self.update()
 
     def paintEvent(self, _) -> None:
         p = QPainter(self)
@@ -1202,7 +1253,7 @@ class _DropOverlay(QWidget):
         f.setBold(True)
         p.setFont(f)
         p.setPen(QColor("#89b4fa"))
-        p.drawText(self.rect(), Qt.AlignmentFlag.AlignCenter, "Drop to upload")
+        p.drawText(self.rect(), Qt.AlignmentFlag.AlignCenter, self._label)
 
 
 # ── Drop-enabled table ─────────────────────────────────────────────────────────
@@ -1245,18 +1296,24 @@ class _DropTable(QTableView):
         mime.setData(REMOTE_ENTRIES_MIME, json.dumps(entries).encode())
         return mime
 
-    def _show_overlay(self) -> None:
+    def _show_overlay(self, label: str = "Drop to upload") -> None:
+        self._drop_overlay.set_label(label)
         self._drop_overlay.setGeometry(self.viewport().rect())
         self._drop_overlay.show()
         self._drop_overlay.raise_()
 
     def dragEnterEvent(self, event) -> None:
-        if event.mimeData().hasUrls() or event.mimeData().hasFormat(REMOTE_ENTRIES_MIME):
-            self._show_overlay()
+        mime = event.mimeData()
+        if mime.hasUrls():
+            self._show_overlay("Drop to upload")
+            event.acceptProposedAction()
+        elif mime.hasFormat(REMOTE_ENTRIES_MIME):
+            self._show_overlay("Drop to copy")
             event.acceptProposedAction()
 
     def dragMoveEvent(self, event) -> None:
-        if event.mimeData().hasUrls() or event.mimeData().hasFormat(REMOTE_ENTRIES_MIME):
+        mime = event.mimeData()
+        if mime.hasUrls() or mime.hasFormat(REMOTE_ENTRIES_MIME):
             # Highlight a directory row when hovering over it so the user knows
             # files will be dropped into that subdirectory instead of _cwd.
             idx = self.indexAt(event.position().toPoint())
@@ -1310,15 +1367,31 @@ class _DropTable(QTableView):
     def dropEvent(self, event) -> None:
         self._drop_overlay.hide()
         self.clearSelection()
-        urls = event.mimeData().urls()
-        paths = [u.toLocalFile() for u in urls if u.isLocalFile()]
-        if paths:
-            # If dropped onto a directory row, upload into that subdirectory.
-            idx = self.indexAt(event.position().toPoint())
-            target_dir = self._panel._cwd
-            if idx.isValid():
-                entry = self._panel._model.entry(idx.row())
-                if entry.is_dir and entry.name != "..":
-                    target_dir = entry.path
-            self._panel._on_drop(paths, target_dir)
-            event.acceptProposedAction()
+        mime = event.mimeData()
+
+        # Resolve the target directory: the hovered directory row, or cwd.
+        idx = self.indexAt(event.position().toPoint())
+        target_dir = self._panel._cwd
+        if idx.isValid():
+            entry = self._panel._model.entry(idx.row())
+            if entry.is_dir and entry.name != "..":
+                target_dir = entry.path
+
+        if mime.hasFormat(REMOTE_ENTRIES_MIME):
+            # Remote → Remote copy (same server, via temp buffer)
+            import json
+            try:
+                entry_dicts = json.loads(
+                    bytes(mime.data(REMOTE_ENTRIES_MIME)).decode()
+                )
+            except Exception:
+                entry_dicts = []
+            if entry_dicts:
+                self._panel._on_remote_drop(entry_dicts, target_dir)
+                event.acceptProposedAction()
+        elif mime.hasUrls():
+            # Local → Remote upload
+            paths = [u.toLocalFile() for u in mime.urls() if u.isLocalFile()]
+            if paths:
+                self._panel._on_drop(paths, target_dir)
+                event.acceptProposedAction()
