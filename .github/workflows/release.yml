@@ -19,7 +19,7 @@ jobs:
       - name: Package (ad-hoc sign)
         run: briefcase package macOS --adhoc-sign
       - name: Rename artifact
-        run: find macOS -name "*.dmg" -exec mv {} openSFTP-macOS.dmg \;
+        run: find dist -name "*.dmg" -exec mv {} openSFTP-macOS.dmg \;
       - uses: actions/upload-artifact@v4
         with:
           name: openSFTP-macOS
@@ -40,7 +40,7 @@ jobs:
         run: briefcase package windows
       - name: Rename artifact
         shell: bash
-        run: find windows -name "*.msi" -exec mv {} openSFTP-Windows.msi \;
+        run: find dist -name "*.msi" -exec mv {} openSFTP-Windows.msi \;
       - uses: actions/upload-artifact@v4
         with:
           name: openSFTP-Windows
@@ -53,18 +53,26 @@ jobs:
       - uses: actions/setup-python@v5
         with:
           python-version: "3.11"
+      - name: Install system Qt deps
+        run: |
+          sudo apt-get update -qq
+          sudo apt-get install -y --no-install-recommends \
+            libgl1 libglib2.0-0 libdbus-1-3 libxkbcommon0 \
+            libfontconfig1 libegl1 libxcb1 libxcb-icccm4 \
+            libxcb-image0 libxcb-keysyms1 libxcb-randr0 \
+            libxcb-render-util0 libxcb-shape0 libxcb-xfixes0
       - name: Install Briefcase
         run: pip install briefcase
-      - name: Build
-        run: briefcase build linux appimage
-      - name: Package
-        run: briefcase package linux appimage
+      - name: Build (no Docker)
+        run: briefcase build linux --no-docker
+      - name: Package (no Docker)
+        run: briefcase package linux --no-docker --adhoc-sign
       - name: Rename artifact
-        run: find linux -name "*.AppImage" -exec mv {} openSFTP-Linux.AppImage \;
+        run: find dist -name "*.deb" -exec mv {} openSFTP-Linux.deb \;
       - uses: actions/upload-artifact@v4
         with:
           name: openSFTP-Linux
-          path: openSFTP-Linux.AppImage
+          path: openSFTP-Linux.deb
 
   release:
     needs: [build-macos, build-windows, build-linux]
@@ -81,5 +89,5 @@ jobs:
           files: |
             openSFTP-macOS.dmg
             openSFTP-Windows.msi
-            openSFTP-Linux.AppImage
+            openSFTP-Linux.deb
           generate_release_notes: true
