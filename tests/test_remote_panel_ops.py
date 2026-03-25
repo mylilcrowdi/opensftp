@@ -29,21 +29,21 @@ def qapp():
 def panel(qapp):
     """Function-scoped panel with explicit cleanup to avoid Qt segfaults.
 
-    Stop the skeleton animation before deletion so its valueChanged callback
-    cannot fire against a partially-destroyed widget during processEvents().
-    gc.collect() is required on Linux/ARM64 (aarch64) to flush cyclic
-    references before Qt processes the deferred deletion — without it,
-    PySide6 6.x triggers a Bus error during teardown.
+    Stop the skeleton animation and flush pending events BEFORE deleteLater()
+    so no callbacks fire against a partially-destroyed widget. processEvents()
+    must not be called after deleteLater() — on Python 3.12 + PySide6 this
+    causes a segfault because processEvents() triggers the deferred C++
+    destruction while the Python wrapper is still alive.
     """
     import gc
     p = RemotePanel()
     yield p
-    # Stop any running animations before scheduled deletion
+    # Stop animations and flush pending events before scheduling deletion.
     p._skeleton._anim.stop()
     p.close()
-    p.deleteLater()
     gc.collect()
     QApplication.processEvents()
+    p.deleteLater()
 
 
 def _entry(name: str, *, is_dir=False, size=0, mtime=1_700_000_000, path=None) -> RemoteEntry:
