@@ -32,8 +32,6 @@ def bar(qapp):
     b._sweep_anim.stop()
     b._label._out.stop()
     b.close()
-    QApplication.processEvents()
-    b.deleteLater()
 
 
 @pytest.fixture
@@ -42,8 +40,6 @@ def fade_label(qapp):
     yield lbl
     lbl._out.stop()
     lbl.close()
-    QApplication.processEvents()
-    lbl.deleteLater()
 
 
 # ── AnimatedStatusBar.showMessage ──────────────────────────────────────────────
