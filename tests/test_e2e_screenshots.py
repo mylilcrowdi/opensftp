@@ -6,7 +6,7 @@ Run with:
 
 Screenshots are saved to: screenshots/ (created automatically).
 
-After running, Claude reads each PNG to provide visual QA feedback.
+After running, review each PNG for visual QA feedback.
 """
 from __future__ import annotations
 
