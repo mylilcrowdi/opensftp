@@ -63,10 +63,10 @@ jobs:
             libxcb-render-util0 libxcb-shape0 libxcb-xfixes0
       - name: Install Briefcase
         run: pip install briefcase
-      - name: Build (no Docker)
-        run: briefcase build linux --no-docker
-      - name: Package (no Docker)
-        run: briefcase package linux --no-docker --adhoc-sign
+      - name: Build
+        run: briefcase build linux
+      - name: Package
+        run: briefcase package linux
       - name: Rename artifact
         run: find dist -name "*.deb" -exec mv {} openSFTP-Linux.deb \;
       - uses: actions/upload-artifact@v4
