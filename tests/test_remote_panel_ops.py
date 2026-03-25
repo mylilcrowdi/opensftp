@@ -27,18 +27,23 @@ def qapp():
 
 @pytest.fixture
 def panel(qapp):
-    """Function-scoped panel; stop animations before closing.
+    """Function-scoped panel with explicit cleanup to avoid Qt segfaults.
 
-    Avoid calling gc.collect(), processEvents(), or deleteLater() in teardown:
-    on Python 3.12 + PySide6 6.x any of these can trigger C++ destruction
-    while Python still holds a reference, causing a segfault. Just stopping
-    the animation and closing is sufficient — PySide6 handles cleanup via
-    reference counting when the fixture scope exits.
+    Stop the skeleton animation before deletion so its valueChanged callback
+    cannot fire against a partially-destroyed widget during processEvents().
+    gc.collect() is required on Linux/ARM64 (aarch64) to flush cyclic
+    references before Qt processes the deferred deletion — without it,
+    PySide6 6.x triggers a Bus error during teardown.
     """
+    import gc
     p = RemotePanel()
     yield p
+    # Stop any running animations before scheduled deletion
     p._skeleton._anim.stop()
     p.close()
+    p.deleteLater()
+    gc.collect()
+    QApplication.processEvents()
 
 
 def _entry(name: str, *, is_dir=False, size=0, mtime=1_700_000_000, path=None) -> RemoteEntry:

@@ -305,11 +305,15 @@ class TestDoPerm:
 
     @pytest.fixture
     def panel(self, qapp):
+        import gc
         from sftp_ui.ui.panels.remote_panel import RemotePanel
         p = RemotePanel()
         yield p
         p._skeleton._anim.stop()
         p.close()
+        p.deleteLater()
+        gc.collect()
+        QApplication.processEvents()
 
     def _entry(self, name: str, st_mode: int = 0o100644) -> RemoteEntry:
         return RemoteEntry(
