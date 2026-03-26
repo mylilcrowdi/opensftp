@@ -19,18 +19,27 @@
 */
 
 /* ── Base ──────────────────────────────────────────────────────────────── */
-QMainWindow, QDialog, QWidget {
+QMainWindow, QDialog {
     background-color: #0f1123;
     color: #d4d8f0;
     font-family: ".AppleSystemUIFont", "Helvetica Neue", Arial;
     font-size: 13px;
 }
+QWidget {
+    color: #d4d8f0;
+    font-family: ".AppleSystemUIFont", "Helvetica Neue", Arial;
+    font-size: 13px;
+}
+
+/* Glass panels: make children transparent so the GlassFrame paintEvent shows */
+QSplitter { background: transparent; }
+QSplitter::handle { background-color: transparent; width: 4px; }
+QSplitter::handle:hover { background-color: #00d4ff20; }
 
 /* ── Toolbar / header areas ─────────────────────────────────────────────── */
 QWidget#toolbar {
-    background-color: qlineargradient(x1:0, y1:0, x2:1, y2:0,
-        stop:0 #0b0d17, stop:0.5 #111428, stop:1 #0d1020);
-    border-bottom: 1px solid #1e2140;
+    background: transparent;
+    border-bottom: none;
 }
 
 /* ── Buttons ────────────────────────────────────────────────────────────── */
@@ -144,11 +153,11 @@ QLabel#error      { color: #fb7185; }
 
 /* ── Tables ─────────────────────────────────────────────────────────────── */
 QTableView {
-    background-color: #0b0d17;
+    background-color: transparent;
     color: #d4d8f0;
-    gridline-color: #1e2140;
-    border: 1px solid #1e2140;
-    border-radius: 8px;
+    gridline-color: #1e214060;
+    border: none;
+    border-radius: 0;
     outline: none;
 }
 QTableView::item              { padding: 4px 8px; }
@@ -166,10 +175,10 @@ QTableView::item:selected:hover {
 
 QHeaderView { background-color: transparent; }
 QHeaderView::section {
-    background-color: #0f1123;
+    background-color: transparent;
     color: #6b70a0;
     border: none;
-    border-bottom: 1px solid #1e2140;
+    border-bottom: 1px solid #1e214060;
     padding: 5px 8px;
     font-weight: 600;
     font-size: 12px;
@@ -177,10 +186,10 @@ QHeaderView::section {
 
 /* ── Trees ───────────────────────────────────────────────────────────────── */
 QTreeWidget {
-    background-color: #0b0d17;
+    background-color: transparent;
     color: #d4d8f0;
-    border: 1px solid #1e2140;
-    border-radius: 8px;
+    border: none;
+    border-radius: 0;
     outline: none;
 }
 QTreeWidget::item              { padding: 3px 6px; }
@@ -209,9 +218,9 @@ QProgressBar::chunk {
 
 /* ── Status bar ──────────────────────────────────────────────────────────── */
 QStatusBar {
-    background-color: #0b0d17;
+    background-color: #0b0d1790;
     color: #6b70a0;
-    border-top: 1px solid #1e2140;
+    border-top: 1px solid #1e214060;
     font-size: 12px;
 }
 
@@ -299,13 +308,13 @@ QMenu::separator {
 
 /* ── Transfer panel ──────────────────────────────────────────────────────── */
 QWidget#transfer-active {
-    background-color: #0b0d17;
-    border-top: 1px solid #1e2140;
+    background: transparent;
+    border-top: 1px solid #1e214060;
 }
 
 /* ── Empty state overlay (no connection) ────────────────────────────────── */
 QWidget#empty-state-overlay {
-    background-color: #0f1123;
+    background: transparent;
 }
 QLabel#empty-state-icon  { color: #1e2140; }
 QLabel#empty-state-title { color: #2a2d52; }

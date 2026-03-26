@@ -40,6 +40,7 @@ from sftp_ui.ui.widgets.status_dot import StatusDot
 from sftp_ui.ui.widgets.animated_status_bar import AnimatedStatusBar
 from sftp_ui.ui.widgets.bookmarks_bar import BookmarksBar
 from sftp_ui.animations.transitions import fade_in
+from sftp_ui.ui.glass_frame import GlassBackground, GlassFrame
 
 if TYPE_CHECKING:
     from sftp_ui.styling.theme_manager import ThemeManager
@@ -108,46 +109,73 @@ class MainWindow(QMainWindow):
         self._reload_connection_list()
         self._restore_session()
         self._restore_geometry()
+        self._apply_frost_state()
+        if self._theme_manager:
+            self._theme_manager.theme_changed.connect(lambda _: self._apply_frost_state())
         QTimer.singleShot(0, self._maybe_auto_connect)
 
     # ── UI construction ───────────────────────────────────────────────────────
 
     def _build_ui(self) -> None:
-        central = QWidget()
-        self.setCentralWidget(central)
-        root = QVBoxLayout(central)
+        # Glass background layer (painted gradient for Frost theme)
+        self._glass_bg = GlassBackground()
+        self.setCentralWidget(self._glass_bg)
+        root = QVBoxLayout(self._glass_bg)
         root.setContentsMargins(0, 0, 0, 0)
         root.setSpacing(0)
 
-        root.addWidget(self._build_toolbar())
+        # Toolbar glass wrapper
+        self._glass_toolbar = GlassFrame()
+        self._glass_toolbar.layout().addWidget(self._build_toolbar())
+        root.addWidget(self._glass_toolbar)
 
         # Bookmarks bar — auto-hides when no favorites are starred
-        self._bookmarks_bar = BookmarksBar(self._store, parent=central)
+        self._bookmarks_bar = BookmarksBar(self._store, parent=self._glass_bg)
         self._bookmarks_bar.connect_requested.connect(self._on_bookmark_connect)
         root.addWidget(self._bookmarks_bar)
 
         splitter = QSplitter(Qt.Orientation.Horizontal)
+
+        # Wrap local panel in glass frame
+        self._glass_local = GlassFrame()
         self._local_panel = LocalPanel(initial_path=self._ui_state.local_path())
+        self._glass_local.layout().addWidget(self._local_panel)
+        splitter.addWidget(self._glass_local)
+
+        # Wrap remote panel in glass frame
+        self._glass_remote = GlassFrame()
         self._remote_panel = RemotePanel()
-        splitter.addWidget(self._local_panel)
-        splitter.addWidget(self._remote_panel)
+        self._glass_remote.layout().addWidget(self._remote_panel)
+        splitter.addWidget(self._glass_remote)
+
         splitter.setSizes([380, 820])
-        splitter.setHandleWidth(1)
+        splitter.setHandleWidth(4)  # wider gap to show glass edges
         # Prevent either panel from being collapsed to zero by the splitter
-        self._local_panel.setMinimumWidth(200)
-        self._remote_panel.setMinimumWidth(200)
+        self._glass_local.setMinimumWidth(200)
+        self._glass_remote.setMinimumWidth(200)
 
         content = QWidget()
+        content.setStyleSheet("background: transparent;")
         cl = QVBoxLayout(content)
         cl.setContentsMargins(8, 8, 8, 4)
-        cl.setSpacing(4)
+        cl.setSpacing(6)
         cl.addWidget(splitter, stretch=1)
 
+        # Wrap transfer panel in glass frame
+        self._glass_transfer = GlassFrame()
         self._transfer_panel = TransferPanel()
         self._transfer_panel.cancel_requested.connect(self._on_cancel)
         self._transfer_panel.resume_requested.connect(self._on_resume)
         self._transfer_panel.pause_resume_requested.connect(self._on_pause_resume)
-        cl.addWidget(self._transfer_panel)
+        self._glass_transfer.layout().addWidget(self._transfer_panel)
+        cl.addWidget(self._glass_transfer)
+
+        # Collect all glass widgets for theme switching
+        self._glass_frames = [
+            self._glass_bg, self._glass_toolbar,
+            self._glass_local, self._glass_remote,
+            self._glass_transfer,
+        ]
 
         # Debounce remote refresh: parallel workers can finish within milliseconds
         # of each other; without debounce every last-job callback triggers a
@@ -1374,6 +1402,15 @@ class MainWindow(QMainWindow):
                            handler=self._show_command_palette, shortcut="Ctrl+P"))
 
     # ── Theme ─────────────────────────────────────────────────────────────────
+
+    def _apply_frost_state(self) -> None:
+        """Activate or deactivate glass frame effects based on current theme."""
+        is_frost = (
+            self._theme_manager is not None
+            and self._theme_manager.current == "frost"
+        )
+        for frame in self._glass_frames:
+            frame.set_frost_active(is_frost)
 
     def _on_open_theme_dialog(self) -> None:
         """Open the theme picker dialog."""
