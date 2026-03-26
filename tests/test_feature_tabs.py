@@ -12,350 +12,399 @@ Tests cover:
 """
 from __future__ import annotations
 
+import os
+import sys
+import json
+import tempfile
+
+os.environ.setdefault("QT_QPA_PLATFORM", "offscreen")
+
 import pytest
 from unittest.mock import MagicMock, patch
 from pathlib import Path
 
-from PySide6.QtWidgets import QApplication, QTabWidget
+from PySide6.QtWidgets import QApplication, QTabWidget, QMessageBox
 from PySide6.QtCore import Qt
 
 from sftp_ui.core.connection import Connection, ConnectionStore
 from sftp_ui.core.queue import TransferQueue
+from sftp_ui.core.ui_state import UIState
 from sftp_ui.ui.main_window import MainWindow
+from sftp_ui.ui.session_widget import SessionWidget
+
+import sftp_ui.animations.transitions as _t
+_t.ANIMATIONS_ENABLED = False
+
+
+@pytest.fixture(scope="session")
+def qapp():
+    return QApplication.instance() or QApplication(sys.argv)
+
+
+@pytest.fixture
+def store(tmp_path):
+    p = tmp_path / "conns.json"
+    p.write_text("[]")
+    s = ConnectionStore(path=str(p))
+    s.add(Connection(name="Server A", host="a.io", user="u", password="x"))
+    s.add(Connection(name="Server B", host="b.io", user="u", password="x"))
+    return s
+
+
+@pytest.fixture
+def ui_state(tmp_path):
+    p = tmp_path / "ui_state.json"
+    return UIState(path=p)
+
+
+@pytest.fixture
+def main_window(qapp, store):
+    with patch("sftp_ui.core.ui_state.UIState._load"):
+        win = MainWindow(store=store)
+    # Process deferred _restore_tabs timer
+    QApplication.processEvents()
+    yield win
+    # Clean up all tabs to prevent resource leaks
+    while win._tabs.count() > 0:
+        session = win._tabs.widget(0)
+        if isinstance(session, SessionWidget):
+            session._sftp = None
+            session._queue = None
+            session._active_conn = None
+        win._tabs.removeTab(0)
+    win.destroy()
 
 
 class TestSessionWidget:
     """Test SessionWidget encapsulation of a single session."""
 
-    def test_session_widget_has_local_panel(self):
-        """SessionWidget contains a LocalPanel."""
-        # Will implement SessionWidget and verify
-        pass
+    def test_session_widget_has_local_panel(self, qapp, ui_state):
+        sw = SessionWidget(ui_state=ui_state)
+        assert sw.local_panel is not None
+        sw.destroy()
 
-    def test_session_widget_has_remote_panel(self):
-        """SessionWidget contains a RemotePanel."""
-        pass
+    def test_session_widget_has_remote_panel(self, qapp, ui_state):
+        sw = SessionWidget(ui_state=ui_state)
+        assert sw.remote_panel is not None
+        sw.destroy()
 
-    def test_session_widget_has_transfer_panel(self):
-        """SessionWidget contains a TransferPanel."""
-        pass
+    def test_session_widget_has_transfer_panel(self, qapp, ui_state):
+        sw = SessionWidget(ui_state=ui_state)
+        assert sw.transfer_panel is not None
+        sw.destroy()
 
-    def test_session_widget_has_sftp_client(self):
-        """SessionWidget has its own SFTPClient instance."""
-        pass
+    def test_session_widget_starts_disconnected(self, qapp, ui_state):
+        sw = SessionWidget(ui_state=ui_state)
+        assert not sw.is_connected
+        assert sw.active_conn is None
+        sw.destroy()
 
-    def test_session_widget_has_transfer_queue(self):
-        """SessionWidget has its own TransferQueue."""
-        # Each session's transfers are independent
-        pass
+    def test_session_widget_has_glass_frames(self, qapp, ui_state):
+        sw = SessionWidget(ui_state=ui_state)
+        assert len(sw._glass_frames) == 3  # local, remote, transfer
+        sw.destroy()
 
-    def test_session_widget_separate_state_from_others(self):
-        """Changes in one SessionWidget don't affect others."""
-        # E.g., navigating in session 1 doesn't affect session 2's path
-        pass
+    def test_session_widget_frost_toggle(self, qapp, ui_state):
+        sw = SessionWidget(ui_state=ui_state)
+        sw.set_frost_active(True)
+        assert all(f._active for f in sw._glass_frames)
+        sw.set_frost_active(False)
+        assert all(not f._active for f in sw._glass_frames)
+        sw.destroy()
 
-    def test_session_widget_connect_creates_sftp_client(self):
-        """SessionWidget.connect(conn) creates _sftp and starts queue."""
-        pass
+    def test_session_widget_disconnect_when_not_connected(self, qapp, ui_state):
+        sw = SessionWidget(ui_state=ui_state)
+        result = sw.disconnect()
+        assert result is True
+        sw.destroy()
 
-    def test_session_widget_disconnect_closes_sftp(self):
-        """SessionWidget.disconnect() closes _sftp and halts queue."""
-        pass
+    def test_session_widget_separate_state_from_others(self, qapp, ui_state):
+        sw1 = SessionWidget(ui_state=ui_state)
+        sw2 = SessionWidget(ui_state=ui_state)
+        assert sw1.local_panel is not sw2.local_panel
+        assert sw1.remote_panel is not sw2.remote_panel
+        assert sw1.transfer_panel is not sw2.transfer_panel
+        sw1.destroy()
+        sw2.destroy()
 
 
 class TestTabWidgetBasics:
     """Test MainWindow QTabWidget setup."""
 
-    @pytest.fixture
-    def qapp(self):
-        return QApplication.instance() or QApplication([])
-
-    @pytest.fixture
-    def main_window(self, qapp):
-        return MainWindow()
-
-    def test_main_window_uses_tab_widget(self, main_window):
-        """MainWindow's central widget is a QTabWidget."""
-        # After refactor, will have self._tabs = QTabWidget()
-        pass
-
-    def test_tab_widget_has_add_tab_button(self, main_window):
-        """QTabBar shows a "+" button for new tabs."""
-        # Set via QTabWidget.setCornerWidget or QTabBar button
-        pass
+    def test_main_window_has_tab_widget(self, main_window):
+        assert hasattr(main_window, "_tabs")
+        assert isinstance(main_window._tabs, QTabWidget)
 
     def test_tabs_are_closable(self, main_window):
-        """Each tab has a close button [X]."""
-        # QTabWidget.setTabsClosable(True)
-        pass
+        assert main_window._tabs.tabsClosable()
 
-    def test_tab_label_shows_connection_name(self, main_window):
-        """Tab shows the connection name, e.g. 'Production Server'."""
-        pass
+    def test_tabs_are_movable(self, main_window):
+        assert main_window._tabs.isMovable()
 
-    def test_tab_label_shows_connection_status_icon(self, main_window):
-        """Tab label includes a dot (• connected, ○ disconnected)."""
-        pass
+    def test_initial_tab_exists(self, main_window):
+        assert main_window._tabs.count() >= 1
 
-    def test_new_tab_button_creates_empty_session(self, main_window):
-        """Clicking '+' creates a new empty tab."""
-        # Initially no connection
-        pass
+    def test_initial_tab_is_session_widget(self, main_window):
+        w = main_window._tabs.widget(0)
+        assert isinstance(w, SessionWidget)
+
+    def test_tab_label_default_is_new_tab(self, main_window):
+        assert main_window._tabs.tabText(0) == "New Tab"
+
+    def test_corner_widget_exists(self, main_window):
+        corner = main_window._tabs.cornerWidget(Qt.Corner.TopRightCorner)
+        assert corner is not None
 
 
 class TestTabCreation:
     """Test creating new tabs."""
 
-    @pytest.fixture
-    def main_window(self):
-        return MainWindow()
+    def test_add_new_tab_increases_count(self, main_window):
+        initial = main_window._tabs.count()
+        main_window._add_new_tab()
+        assert main_window._tabs.count() == initial + 1
 
-    def test_new_tab_on_connect_action(self, main_window):
-        """Clicking connect creates a new tab (if current is empty)."""
-        # Or if all tabs are connected, create a new one
-        pass
+    def test_add_new_tab_returns_session_widget(self, main_window):
+        session = main_window._add_new_tab()
+        assert isinstance(session, SessionWidget)
 
-    def test_new_tab_shows_bookmarks_and_empty_panels(self, main_window):
-        """New tab has bookmarks bar and empty local/remote panels."""
-        pass
-
-    def test_connect_in_empty_tab_uses_that_tab(self, main_window):
-        """If current tab is empty, connecting fills it (doesn't create new tab)."""
-        pass
-
-    def test_connect_in_connected_tab_creates_new_tab(self, main_window):
-        """If current tab already has a connection, new connect creates another tab."""
-        pass
+    def test_new_tab_becomes_active(self, main_window):
+        session = main_window._add_new_tab()
+        assert main_window._active_session() is session
 
     def test_max_tabs_limit(self, main_window):
-        """Optionally: limit to N tabs to prevent resource exhaustion."""
-        # E.g., max 20 concurrent connections
-        pass
+        # Fill up to max
+        while main_window._tabs.count() < MainWindow.MAX_TABS:
+            main_window._add_new_tab()
+        assert main_window._tabs.count() == MainWindow.MAX_TABS
+        # Adding one more should be blocked (shows warning dialog)
+        with patch.object(QMessageBox, "warning"):
+            main_window._add_new_tab()
+        assert main_window._tabs.count() == MainWindow.MAX_TABS
+
+    def test_connect_in_empty_tab_uses_that_tab(self, main_window):
+        """If current tab is not connected, connecting fills it."""
+        initial_count = main_window._tabs.count()
+        session = main_window._active_session()
+        assert not session.is_connected
+        # Simulate connect (won't actually connect but will use existing tab)
+        conn = main_window._store.all()[0]
+        for i in range(main_window._conn_combo.count()):
+            if main_window._conn_combo.itemData(i) == conn.id:
+                main_window._conn_combo.setCurrentIndex(i)
+                break
+        # The tab count should stay the same
+        assert main_window._tabs.count() == initial_count
 
 
 class TestTabClosing:
     """Test closing tabs."""
 
-    @pytest.fixture
-    def main_window(self):
-        return MainWindow()
+    def test_close_tab_decreases_count(self, main_window):
+        main_window._add_new_tab()
+        count_before = main_window._tabs.count()
+        main_window._on_close_tab(0)
+        assert main_window._tabs.count() == count_before - 1
 
-    def test_close_tab_button_closes_session(self, main_window):
-        """Clicking the [X] on a tab closes that session."""
-        pass
-
-    def test_close_disconnected_tab_succeeds_silently(self, main_window):
-        """Closing an already-disconnected tab is instant."""
-        pass
-
-    def test_close_connected_tab_shows_warning(self, main_window):
-        """Closing a tab with active transfers shows warning."""
-        # "This session has transfers in progress. Cancel them?"
-        pass
-
-    def test_close_tab_cancels_pending_transfers(self, main_window):
-        """Closing a tab cancels its queued and in-progress transfers."""
-        pass
-
-    def test_close_last_tab_creates_new_empty_tab(self, main_window):
+    def test_close_last_tab_creates_new_empty(self, main_window):
         """Closing the last tab automatically creates a new empty one."""
-        # Keep the window always functional
-        pass
+        while main_window._tabs.count() > 1:
+            main_window._on_close_tab(0)
+        main_window._on_close_tab(0)
+        assert main_window._tabs.count() == 1
+        assert isinstance(main_window._active_session(), SessionWidget)
 
-    def test_close_tab_cleans_up_resources(self, main_window):
-        """Closing a tab closes its SFTP connections and temp edit files."""
-        pass
+    def test_close_disconnected_tab_succeeds(self, main_window):
+        main_window._add_new_tab()
+        count = main_window._tabs.count()
+        main_window._on_close_tab(count - 1)
+        assert main_window._tabs.count() == count - 1
+
+    def test_close_connected_tab_with_transfers_asks(self, main_window):
+        """Closing a tab with active transfers shows warning."""
+        session = main_window._add_new_tab()
+        mock_sftp = MagicMock()
+        mock_sftp.is_connected.return_value = True
+        session._sftp = mock_sftp
+        mock_queue = MagicMock()
+        mock_queue.pending_count.return_value = 3
+        session._queue = mock_queue
+
+        with patch.object(
+            QMessageBox, "question",
+            return_value=QMessageBox.StandardButton.No,
+        ):
+            count_before = main_window._tabs.count()
+            idx = main_window._tabs.indexOf(session)
+            main_window._on_close_tab(idx)
+            # Tab should NOT have been closed
+            assert main_window._tabs.count() == count_before
+
+        # Clean up
+        session._sftp = None
+        session._queue = None
 
 
 class TestActiveTabSwitching:
     """Test switching between tabs."""
 
-    @pytest.fixture
-    def main_window(self):
-        return MainWindow()
+    def test_switching_tabs_updates_active_session(self, main_window):
+        s1 = main_window._active_session()
+        s2 = main_window._add_new_tab()
+        assert main_window._active_session() is s2
+        main_window._tabs.setCurrentIndex(0)
+        assert main_window._active_session() is s1
 
-    def test_clicking_tab_makes_it_active(self, main_window):
-        """Clicking a tab header activates it."""
-        pass
+    def test_next_tab_wraps_around(self, main_window):
+        main_window._add_new_tab()
+        main_window._tabs.setCurrentIndex(main_window._tabs.count() - 1)
+        main_window._next_tab()
+        assert main_window._tabs.currentIndex() == 0
 
-    def test_active_tab_shows_in_tab_bar(self, main_window):
-        """Active tab is highlighted/bold in the tab bar."""
-        pass
-
-    def test_tab_change_updates_toolbar(self, main_window):
-        """Switching tabs updates toolbar buttons (connect/disconnect/refresh)."""
-        # Toolbar mirrors the active tab's state
-        pass
-
-    def test_toolbar_connect_button_state_reflects_active_tab(self, main_window):
-        """Connect button is enabled/disabled based on active tab's state."""
-        pass
-
-    def test_toolbar_disconnect_button_state_reflects_active_tab(self, main_window):
-        """Disconnect button is only enabled if active tab is connected."""
-        pass
-
-    def test_connection_combo_reflects_active_tab(self, main_window):
-        """Connection dropdown shows the active tab's connection."""
-        # Selecting a different connection changes the active tab's conn
-        pass
-
-    def test_refresh_button_refreshes_active_tab_only(self, main_window):
-        """F5 or refresh button refreshes only the active tab's remote panel."""
-        pass
+    def test_prev_tab_wraps_around(self, main_window):
+        main_window._add_new_tab()
+        main_window._tabs.setCurrentIndex(0)
+        main_window._prev_tab()
+        assert main_window._tabs.currentIndex() == main_window._tabs.count() - 1
 
 
 class TestToolbarInteractionWithTabs:
     """Test toolbar interactions with active tab."""
 
-    @pytest.fixture
-    def main_window(self):
-        return MainWindow()
+    def test_toolbar_reflects_disconnected_tab(self, main_window):
+        session = main_window._active_session()
+        assert not session.is_connected
+        assert main_window._connect_btn.isEnabled()
+        assert not main_window._disconnect_btn.isEnabled()
+        assert not main_window._refresh_btn.isEnabled()
+        assert not main_window._sync_btn.isEnabled()
 
-    def test_connect_button_connects_active_tab(self, main_window):
-        """Clicking connect uses the active tab's selected connection."""
-        pass
+    def test_toolbar_reflects_connected_tab(self, main_window):
+        session = main_window._active_session()
+        mock_sftp = MagicMock()
+        mock_sftp.is_connected.return_value = True
+        session._sftp = mock_sftp
+        conn = Connection(name="TestConn", host="test.io", user="u")
+        session._active_conn = conn
 
-    def test_disconnect_button_disconnects_active_tab(self, main_window):
-        """Clicking disconnect closes the active tab's SFTP connection."""
-        pass
+        main_window._sync_toolbar_to_session(session)
+        assert not main_window._connect_btn.isEnabled()
+        assert main_window._disconnect_btn.isEnabled()
+        assert main_window._refresh_btn.isEnabled()
+        assert main_window._sync_btn.isEnabled()
+        assert "TestConn" in main_window.windowTitle()
 
-    def test_bookmarks_bar_reflects_active_tab(self, main_window):
-        """Bookmarks bar shows bookmarks from the active tab's connection."""
-        # Or shows all bookmarks but clicking selects the right tab
-        pass
+        # Clean up
+        session._sftp = None
+        session._active_conn = None
 
-    def test_sync_button_syncs_active_tab(self, main_window):
-        """Sync downloads/uploads within the active tab only."""
-        pass
+    def test_switching_tab_syncs_toolbar(self, main_window):
+        """Switching tabs updates toolbar to reflect active tab's state."""
+        s1 = main_window._active_session()
+        s2 = main_window._add_new_tab()
 
-    def test_connection_combo_filters_by_group(self, main_window):
-        """Connection dropdown still shows all connections (shared across tabs)."""
-        # Selecting one connects it in the active tab
-        pass
+        # Make s1 look connected
+        mock_sftp = MagicMock()
+        mock_sftp.is_connected.return_value = True
+        s1._sftp = mock_sftp
+        s1._active_conn = Connection(name="S1", host="s1.io", user="u")
 
+        # Switch back to s1
+        main_window._tabs.setCurrentIndex(main_window._tabs.indexOf(s1))
+        assert main_window._disconnect_btn.isEnabled()
 
-class TestTabKeyboardShortcuts:
-    """Test keyboard shortcuts for tab navigation."""
+        # Switch to s2 (disconnected)
+        main_window._tabs.setCurrentIndex(main_window._tabs.indexOf(s2))
+        assert main_window._connect_btn.isEnabled()
+        assert not main_window._disconnect_btn.isEnabled()
 
-    @pytest.fixture
-    def main_window(self):
-        return MainWindow()
-
-    def test_ctrl_t_creates_new_tab(self, main_window):
-        """Ctrl+T opens a new tab."""
-        pass
-
-    def test_ctrl_w_closes_active_tab(self, main_window):
-        """Ctrl+W closes the active tab."""
-        pass
-
-    def test_ctrl_tab_switches_to_next_tab(self, main_window):
-        """Ctrl+Tab activates the next tab (wraps around)."""
-        pass
-
-    def test_ctrl_shift_tab_switches_to_previous_tab(self, main_window):
-        """Ctrl+Shift+Tab activates the previous tab (wraps around)."""
-        pass
-
-    def test_cmd_option_right_arrow_next_tab_macos(self, main_window):
-        """On macOS, Cmd+Option+Right also switches tabs."""
-        pass
-
-    def test_cmd_option_left_arrow_previous_tab_macos(self, main_window):
-        """On macOS, Cmd+Option+Left also switches tabs."""
-        pass
+        # Clean up
+        s1._sftp = None
+        s1._active_conn = None
 
 
 class TestTabPersistence:
     """Test saving/restoring tab state."""
 
-    def test_open_tabs_saved_to_ui_state(self):
-        """On app close, store open tabs in UIState."""
-        # Store: [{connection_id, remote_path, local_path}, ...]
-        pass
+    def test_save_tab_state(self, main_window):
+        main_window._add_new_tab()
+        main_window._save_tab_state()
+        tabs = main_window._ui_state.open_tabs
+        assert len(tabs) >= 2
 
-    def test_open_tabs_restored_on_startup(self):
-        """On app startup, restore previously open tabs."""
-        # Reconnect each tab's connection
-        # Navigate to remembered paths
-        pass
+    def test_tab_state_includes_connection_id(self, main_window):
+        session = main_window._active_session()
+        conn = Connection(name="Persisted", host="p.io", user="u")
+        session._active_conn = conn
 
-    def test_active_tab_index_restored(self):
-        """The previously active tab is re-activated on startup."""
-        pass
+        main_window._save_tab_state()
+        tabs = main_window._ui_state.open_tabs
+        idx = main_window._tabs.indexOf(session)
+        assert tabs[idx]["connection_id"] == conn.id
 
-    def test_tab_local_path_restored(self):
-        """Each tab's local panel path is restored."""
-        pass
+        session._active_conn = None
 
-    def test_tab_remote_path_restored(self):
-        """Each tab's remote panel path is restored."""
-        pass
-
-    def test_restoration_fails_gracefully(self):
-        """If a tab's connection no longer exists, skip it."""
-        # Don't crash; just close the tab on startup
-        pass
+    def test_active_tab_index_persisted(self, main_window):
+        main_window._add_new_tab()
+        main_window._tabs.setCurrentIndex(0)
+        main_window._save_tab_state()
+        assert main_window._ui_state.active_tab_index == 0
 
 
 class TestMultiTabIntegration:
     """Integration tests: full multi-tab workflow."""
 
-    @pytest.fixture
-    def qapp(self):
-        return QApplication.instance() or QApplication([])
+    def test_multiple_tabs_independent_panels(self, main_window):
+        s1 = main_window._active_session()
+        s2 = main_window._add_new_tab()
+        assert s1.local_panel is not s2.local_panel
+        assert s1.remote_panel is not s2.remote_panel
+        assert s1.transfer_panel is not s2.transfer_panel
 
-    @pytest.fixture
-    def main_window(self, qapp):
-        return MainWindow()
+    def test_connection_changed_updates_tab_title(self, main_window):
+        session = main_window._add_new_tab()
+        idx = main_window._tabs.indexOf(session)
+        assert main_window._tabs.tabText(idx) == "New Tab"
 
-    def test_open_multiple_connections(self, main_window):
-        """User connects to Server A, then Server B in a new tab."""
-        # Tab 1: connected to A
-        # Tab 2: connected to B
-        # Each has independent transfer queue
-        pass
+        conn = Connection(name="MyServer", host="my.io", user="u")
+        main_window._on_session_connection_changed(session, conn)
+        assert main_window._tabs.tabText(idx) == "MyServer"
 
-    def test_transfer_in_tab_a_doesnt_block_tab_b(self, main_window):
-        """Large transfer in tab A doesn't freeze tab B's navigation."""
-        # Each tab's worker thread is separate
-        pass
+    def test_disconnect_resets_tab_title(self, main_window):
+        session = main_window._add_new_tab()
+        idx = main_window._tabs.indexOf(session)
 
-    def test_switch_tabs_during_transfer(self, main_window):
-        """User can switch between tabs while transfers are in progress."""
-        # Transfer continues in background
-        pass
+        conn = Connection(name="MyServer", host="my.io", user="u")
+        main_window._on_session_connection_changed(session, conn)
+        assert main_window._tabs.tabText(idx) == "MyServer"
 
-    def test_close_tab_while_transfer_active(self, main_window):
-        """Closing tab A's transfer should not affect tab B's transfer."""
-        pass
+        main_window._on_session_connection_changed(session, None)
+        assert main_window._tabs.tabText(idx) == "New Tab"
 
-    def test_close_all_tabs_and_reopen(self, main_window):
-        """Close all tabs, then re-open them; state is restored."""
-        pass
+    def test_frost_applied_to_all_tabs(self, main_window):
+        s1 = main_window._active_session()
+        s2 = main_window._add_new_tab()
+
+        # Simulate frost
+        for s in (s1, s2):
+            s.set_frost_active(True)
+            assert all(f._active for f in s._glass_frames)
+
+        for s in (s1, s2):
+            s.set_frost_active(False)
+            assert all(not f._active for f in s._glass_frames)
 
 
 class TestTabMemoryManagement:
     """Test resource cleanup."""
 
-    def test_closed_tab_sftp_client_disconnected(self):
-        """Closing a tab closes its SFTPClient, freeing SSH connection."""
-        pass
-
-    def test_closed_tab_transfer_queue_stopped(self):
-        """Closing a tab stops its TransferQueue worker thread."""
-        pass
-
-    def test_closed_tab_temp_edit_files_cleaned(self):
-        """Closing a tab cleans up any open edit temp files."""
-        pass
-
-    def test_app_close_closes_all_tabs_cleanly(self):
-        """App close properly closes all tabs and releases all resources."""
-        pass
-
-    def test_many_tabs_memory_usage(self):
-        """Memory usage grows linearly with number of tabs (no leaks)."""
-        # Could test by opening/closing 50 tabs and checking memory
-        pass
+    def test_closed_tab_cleanup(self, main_window):
+        session = main_window._add_new_tab()
+        idx = main_window._tabs.indexOf(session)
+        main_window._on_close_tab(idx)
+        # Session should be scheduled for deletion
+        # (can't directly test deleteLater, but tab count decreased)
+        assert session not in [
+            main_window._tabs.widget(i)
+            for i in range(main_window._tabs.count())
+        ]

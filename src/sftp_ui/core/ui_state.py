@@ -66,6 +66,9 @@ class UIState:
         self.column_widths: dict[str, list[int]] = {}   # panel_id → [col_width, ...]
         # panel_id → {"col": int, "order": int}  (-1 col = neutral / no sort)
         self.sort_state: dict[str, dict[str, int]] = {}
+        # Multi-tab persistence
+        self.open_tabs: list[dict] = []        # [{connection_id, local_path, remote_path}, ...]
+        self.active_tab_index: int = 0
         self._load()
 
     # ── Accessors ────────────────────────────────────────────────────────────
@@ -132,6 +135,14 @@ class UIState:
         order = int(entry.get("order",  0))
         return col, order
 
+    def set_open_tabs(self, tabs: list[dict]) -> None:
+        self.open_tabs = tabs
+        self.save()
+
+    def set_active_tab_index(self, index: int) -> None:
+        self.active_tab_index = index
+        self.save()
+
     # ── Persistence ──────────────────────────────────────────────────────────
 
     def save(self) -> None:
@@ -144,6 +155,8 @@ class UIState:
                 "was_connected": self.was_connected,
                 "column_widths": self.column_widths,
                 "sort_state": self.sort_state,
+                "open_tabs": self.open_tabs,
+                "active_tab_index": self.active_tab_index,
             }
             self._path.write_text(json.dumps(data, indent=2), encoding="utf-8")
         except OSError:
@@ -184,5 +197,13 @@ class UIState:
                         except (TypeError, ValueError):
                             pass  # skip malformed entries
                 self.sort_state = safe_ss
+
+            ot = data.get("open_tabs", [])
+            if isinstance(ot, list):
+                self.open_tabs = [
+                    t for t in ot
+                    if isinstance(t, dict) and "connection_id" in t
+                ]
+            self.active_tab_index = int(data.get("active_tab_index", 0))
         except (json.JSONDecodeError, OSError, AttributeError):
             pass  # corrupt file — start from defaults

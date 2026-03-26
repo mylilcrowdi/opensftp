@@ -250,35 +250,35 @@ class TestRemotePanelTerminalSignal:
 
 
 # ---------------------------------------------------------------------------
-# MainWindow._on_open_terminal_requested
+# SessionWidget._on_open_terminal_requested
 # ---------------------------------------------------------------------------
 
 class TestMainWindowOpenTerminal:
-    """Unit tests for the MainWindow handler using mocked dependencies."""
+    """Unit tests for the SessionWidget handler using mocked dependencies."""
 
-    def _make_mw(self, conn=None):
-        """Create a minimal MainWindow-like mock."""
-        from sftp_ui.ui.main_window import MainWindow
+    def _make_sw(self, conn=None):
+        """Create a minimal SessionWidget-like mock."""
+        from sftp_ui.ui.session_widget import SessionWidget
 
-        mw = MagicMock(spec=MainWindow)
-        mw._active_conn = conn
-        mw._signals = MagicMock()
-        mw._signals.status = MagicMock()
-        mw._signals.status.emit = MagicMock()
-        return mw
+        sw = MagicMock(spec=SessionWidget)
+        sw._active_conn = conn
+        sw._signals = MagicMock()
+        sw._signals.status = MagicMock()
+        sw._signals.status.emit = MagicMock()
+        return sw
 
     def test_no_connection_emits_error(self):
-        from sftp_ui.ui.main_window import MainWindow
+        from sftp_ui.ui.session_widget import SessionWidget
 
-        mw = self._make_mw(conn=None)
-        MainWindow._on_open_terminal_requested(mw, "/some/path")
+        sw = self._make_sw(conn=None)
+        SessionWidget._on_open_terminal_requested(sw, "/some/path")
 
-        mw._signals.status.emit.assert_called_once()
-        msg = mw._signals.status.emit.call_args[0][0]
+        sw._signals.status.emit.assert_called_once()
+        msg = sw._signals.status.emit.call_args[0][0]
         assert "Not connected" in msg
 
     def test_happy_path_calls_open_ssh_terminal(self):
-        from sftp_ui.ui.main_window import MainWindow
+        from sftp_ui.ui.session_widget import SessionWidget
 
         conn = MagicMock()
         conn.host = "myserver.io"
@@ -286,10 +286,10 @@ class TestMainWindowOpenTerminal:
         conn.port = 22
         conn.key_path = None
 
-        mw = self._make_mw(conn=conn)
+        sw = self._make_sw(conn=conn)
 
-        with patch("sftp_ui.ui.main_window.open_ssh_terminal") as mock_term:
-            MainWindow._on_open_terminal_requested(mw, "/var/www")
+        with patch("sftp_ui.ui.session_widget.open_ssh_terminal") as mock_term:
+            SessionWidget._on_open_terminal_requested(sw, "/var/www")
 
         mock_term.assert_called_once_with(
             host="myserver.io",
@@ -298,12 +298,12 @@ class TestMainWindowOpenTerminal:
             remote_path="/var/www",
             key_path=None,
         )
-        mw._signals.status.emit.assert_called_once()
-        msg = mw._signals.status.emit.call_args[0][0]
+        sw._signals.status.emit.assert_called_once()
+        msg = sw._signals.status.emit.call_args[0][0]
         assert "/var/www" in msg
 
     def test_key_path_forwarded(self):
-        from sftp_ui.ui.main_window import MainWindow
+        from sftp_ui.ui.session_widget import SessionWidget
 
         conn = MagicMock()
         conn.host = "h"
@@ -311,16 +311,16 @@ class TestMainWindowOpenTerminal:
         conn.port = 22
         conn.key_path = "/home/u/.ssh/id_ed25519"
 
-        mw = self._make_mw(conn=conn)
+        sw = self._make_sw(conn=conn)
 
-        with patch("sftp_ui.ui.main_window.open_ssh_terminal") as mock_term:
-            MainWindow._on_open_terminal_requested(mw, "/opt")
+        with patch("sftp_ui.ui.session_widget.open_ssh_terminal") as mock_term:
+            SessionWidget._on_open_terminal_requested(sw, "/opt")
 
         _, kwargs = mock_term.call_args
         assert kwargs.get("key_path") == "/home/u/.ssh/id_ed25519"
 
     def test_custom_port_forwarded(self):
-        from sftp_ui.ui.main_window import MainWindow
+        from sftp_ui.ui.session_widget import SessionWidget
 
         conn = MagicMock()
         conn.host = "h"
@@ -328,16 +328,16 @@ class TestMainWindowOpenTerminal:
         conn.port = 4422
         conn.key_path = None
 
-        mw = self._make_mw(conn=conn)
+        sw = self._make_sw(conn=conn)
 
-        with patch("sftp_ui.ui.main_window.open_ssh_terminal") as mock_term:
-            MainWindow._on_open_terminal_requested(mw, "/")
+        with patch("sftp_ui.ui.session_widget.open_ssh_terminal") as mock_term:
+            SessionWidget._on_open_terminal_requested(sw, "/")
 
         _, kwargs = mock_term.call_args
         assert kwargs.get("port") == 4422
 
     def test_launch_error_emits_status(self):
-        from sftp_ui.ui.main_window import MainWindow
+        from sftp_ui.ui.session_widget import SessionWidget
 
         conn = MagicMock()
         conn.host = "h"
@@ -345,21 +345,21 @@ class TestMainWindowOpenTerminal:
         conn.port = 22
         conn.key_path = None
 
-        mw = self._make_mw(conn=conn)
+        sw = self._make_sw(conn=conn)
 
         with patch(
-            "sftp_ui.ui.main_window.open_ssh_terminal",
+            "sftp_ui.ui.session_widget.open_ssh_terminal",
             side_effect=RuntimeError("No supported terminal emulator found."),
         ):
-            MainWindow._on_open_terminal_requested(mw, "/data")
+            SessionWidget._on_open_terminal_requested(sw, "/data")
 
-        mw._signals.status.emit.assert_called_once()
-        msg = mw._signals.status.emit.call_args[0][0]
+        sw._signals.status.emit.assert_called_once()
+        msg = sw._signals.status.emit.call_args[0][0]
         assert "failed" in msg.lower() or "terminal" in msg.lower()
 
     def test_empty_path_uses_tilde_in_status(self):
         """An empty remote_path shows '~' in the success status message."""
-        from sftp_ui.ui.main_window import MainWindow
+        from sftp_ui.ui.session_widget import SessionWidget
 
         conn = MagicMock()
         conn.host = "h"
@@ -367,10 +367,10 @@ class TestMainWindowOpenTerminal:
         conn.port = 22
         conn.key_path = None
 
-        mw = self._make_mw(conn=conn)
+        sw = self._make_sw(conn=conn)
 
-        with patch("sftp_ui.ui.main_window.open_ssh_terminal"):
-            MainWindow._on_open_terminal_requested(mw, "")
+        with patch("sftp_ui.ui.session_widget.open_ssh_terminal"):
+            SessionWidget._on_open_terminal_requested(sw, "")
 
-        msg = mw._signals.status.emit.call_args[0][0]
+        msg = sw._signals.status.emit.call_args[0][0]
         assert "~" in msg

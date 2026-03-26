@@ -33,6 +33,8 @@ def _make_window(qapp):
     """Return a MainWindow with no connections and no SFTP client."""
     with patch("sftp_ui.core.connection.ConnectionStore._load"):
         win = MainWindow()
+    # Process deferred _restore_tabs timer so initial tab is created
+    QApplication.processEvents()
     return win
 
 
@@ -48,9 +50,10 @@ class TestCloseEventGuard:
         win.destroy()
 
     def test_close_allowed_when_queue_is_none(self, qapp):
-        """closeEvent with _queue=None must accept the event."""
+        """closeEvent with _queue=None on active session must accept."""
         win = _make_window(qapp)
-        win._queue = None
+        session = win._active_session()
+        session._queue = None
         event = QCloseEvent()
         win.closeEvent(event)
         assert event.isAccepted()
@@ -59,13 +62,17 @@ class TestCloseEventGuard:
     def test_close_blocked_when_user_declines(self, qapp):
         """When transfers are running and user clicks No, event must be ignored."""
         win = _make_window(qapp)
+        session = win._active_session()
 
-        # Create a mock queue that reports 2 pending transfers
+        # Make session appear connected with pending transfers
+        mock_sftp = MagicMock()
+        mock_sftp.is_connected.return_value = True
+        session._sftp = mock_sftp
+
         mock_queue = MagicMock()
         mock_queue.pending_count.return_value = 2
-        win._queue = mock_queue
+        session._queue = mock_queue
 
-        # Patch QMessageBox.question to simulate the user clicking No
         with patch.object(
             QMessageBox,
             "question",
@@ -74,20 +81,25 @@ class TestCloseEventGuard:
             event = QCloseEvent()
             win.closeEvent(event)
 
-        # The close must have been rejected because _queue is still set
         assert not event.isAccepted()
-        win._queue = None
+        # Clean up
+        session._sftp = None
+        session._queue = None
         win.destroy()
 
     def test_close_allowed_when_user_confirms(self, qapp):
         """When user clicks Yes to cancel transfers, event must be accepted."""
         win = _make_window(qapp)
+        session = win._active_session()
+
+        mock_sftp = MagicMock()
+        mock_sftp.is_connected.return_value = True
+        session._sftp = mock_sftp
 
         mock_queue = MagicMock()
         mock_queue.pending_count.return_value = 1
-        win._queue = mock_queue
+        session._queue = mock_queue
 
-        # Patch QMessageBox.question to simulate the user clicking Yes
         with patch.object(
             QMessageBox,
             "question",
@@ -102,11 +114,16 @@ class TestCloseEventGuard:
     def test_close_allowed_when_queue_has_no_pending(self, qapp):
         """A queue with 0 pending transfers does not block the close."""
         win = _make_window(qapp)
+        session = win._active_session()
+
+        mock_sftp = MagicMock()
+        mock_sftp.is_connected.return_value = True
+        session._sftp = mock_sftp
 
         mock_queue = MagicMock()
         mock_queue.pending_count.return_value = 0
         mock_queue.stop = MagicMock()
-        win._queue = mock_queue
+        session._queue = mock_queue
 
         event = QCloseEvent()
         win.closeEvent(event)
