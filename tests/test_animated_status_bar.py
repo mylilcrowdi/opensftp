@@ -27,23 +27,25 @@ def qapp():
 
 @pytest.fixture
 def bar(qapp):
+    import shiboken6
     b = AnimatedStatusBar()
     yield b
     b._sweep_anim.stop()
     b._label._out.stop()
     b.close()
-    b.deleteLater()
-    QApplication.processEvents()
+    if shiboken6.isValid(b):
+        shiboken6.delete(b)
 
 
 @pytest.fixture
 def fade_label(qapp):
+    import shiboken6
     lbl = _FadeLabel()
     yield lbl
     lbl._out.stop()
     lbl.close()
-    lbl.deleteLater()
-    QApplication.processEvents()
+    if shiboken6.isValid(lbl):
+        shiboken6.delete(lbl)
 
 
 # ── AnimatedStatusBar.showMessage ──────────────────────────────────────────────

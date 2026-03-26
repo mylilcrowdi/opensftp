@@ -26,11 +26,12 @@ def qapp():
 
 @pytest.fixture
 def panel(qapp):
+    import shiboken6
     p = RemotePanel()
     yield p
     p.close()
-    p.deleteLater()
-    QApplication.processEvents()
+    if shiboken6.isValid(p):
+        shiboken6.delete(p)
 
 
 # ── _duplicate_name() — first copy (n=1) ──────────────────────────────────────
