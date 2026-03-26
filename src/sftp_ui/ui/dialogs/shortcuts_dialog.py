@@ -65,6 +65,7 @@ _SHORTCUT_GROUPS: list[tuple[str, list[tuple[str, str]]]] = [
         ("Delete",           "Delete selected file(s)"),
     ]),
     ("Window", [
+        ("Ctrl+P",           "Command Palette"),
         ("F1 / Ctrl+?",      "Show this help overlay"),
     ]),
 ]

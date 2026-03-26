@@ -29,7 +29,9 @@ from sftp_ui.core.transfer_history import TransferHistory
 from sftp_ui.core.ui_state import UIState
 from sftp_ui.ui.dialogs.connection_dialog import ConnectionDialog
 from sftp_ui.ui.dialogs.connection_manager import ConnectionManagerDialog
+from sftp_ui.ui.dialogs.command_palette import CommandPaletteDialog
 from sftp_ui.ui.dialogs.shortcuts_dialog import ShortcutsDialog
+from sftp_ui.core.command_registry import Command, CommandRegistry
 from sftp_ui.ui.dialogs.sync_dialog import SyncDialog
 from sftp_ui.ui.panels.local_panel import LocalPanel
 from sftp_ui.ui.panels.remote_panel import RemotePanel
@@ -98,8 +100,11 @@ class MainWindow(QMainWindow):
         # Persistent transfer history
         self._history = TransferHistory(Path.home() / ".config" / "sftp-ui" / "transfer_history.jsonl")
 
+        self._command_registry = CommandRegistry()
+
         self._build_ui()
         self._connect_signals()
+        self._register_commands()
         self._reload_connection_list()
         self._restore_session()
         self._restore_geometry()
@@ -282,6 +287,7 @@ class MainWindow(QMainWindow):
         QShortcut(QKeySequence("Ctrl+G"), self).activated.connect(self._remote_panel.focus_path_input)
         QShortcut(QKeySequence("Ctrl+B"), self).activated.connect(self._toggle_bookmarks_bar)
         QShortcut(QKeySequence("Ctrl+F"), self).activated.connect(self._on_search)
+        QShortcut(QKeySequence("Ctrl+P"),      self).activated.connect(self._show_command_palette)
         QShortcut(QKeySequence("F1"),          self).activated.connect(self._show_shortcuts_dialog)
         QShortcut(QKeySequence("Ctrl+?"),      self).activated.connect(self._show_shortcuts_dialog)
 
@@ -1318,6 +1324,54 @@ class MainWindow(QMainWindow):
         """Open the keyboard shortcut help overlay (F1 / Ctrl+?)."""
         dlg = ShortcutsDialog(self)
         dlg.exec()
+
+    # ── Command Palette ────────────────────────────────────────────────────────
+
+    def _show_command_palette(self) -> None:
+        """Open the command palette (Ctrl+P)."""
+        dlg = CommandPaletteDialog(self._command_registry, parent=self)
+        dlg.exec()
+
+    def _register_commands(self) -> None:
+        """Register all available commands in the command registry."""
+        r = self._command_registry
+        is_connected = lambda: self._sftp is not None
+
+        # Connection
+        r.register(Command(id="conn.toggle", name="Connect / Disconnect", category="Connection",
+                           handler=self._toggle_connection, shortcut="Ctrl+K"))
+        r.register(Command(id="conn.new", name="New Connection", category="Connection",
+                           handler=self._on_new_connection, shortcut="Ctrl+N"))
+        r.register(Command(id="conn.manage", name="Manage Connections", category="Connection",
+                           handler=self._on_manage_connections))
+        r.register(Command(id="conn.bookmarks", name="Toggle Bookmarks Bar", category="Connection",
+                           handler=self._toggle_bookmarks_bar, shortcut="Ctrl+B"))
+
+        # Navigation
+        r.register(Command(id="nav.refresh", name="Refresh Remote", category="Navigation",
+                           handler=self._remote_panel.refresh, shortcut="Ctrl+R",
+                           enabled_when=is_connected))
+        r.register(Command(id="nav.goto", name="Go to Path", category="Navigation",
+                           handler=self._remote_panel.focus_path_input, shortcut="Ctrl+G",
+                           enabled_when=is_connected))
+        r.register(Command(id="nav.hidden", name="Toggle Hidden Files", category="Navigation",
+                           handler=self._remote_panel.toggle_hidden, shortcut="Ctrl+Shift+.",
+                           enabled_when=is_connected))
+
+        # Transfer
+        r.register(Command(id="transfer.sync", name="Sync Directories", category="Transfer",
+                           handler=self._on_sync, enabled_when=is_connected))
+
+        # Search
+        r.register(Command(id="search.remote", name="Search Remote Files", category="Search",
+                           handler=self._on_search, shortcut="Ctrl+F",
+                           enabled_when=is_connected))
+
+        # UI
+        r.register(Command(id="ui.shortcuts", name="Keyboard Shortcuts", category="UI",
+                           handler=self._show_shortcuts_dialog, shortcut="F1"))
+        r.register(Command(id="ui.palette", name="Command Palette", category="UI",
+                           handler=self._show_command_palette, shortcut="Ctrl+P"))
 
     # ── Theme ─────────────────────────────────────────────────────────────────
 
