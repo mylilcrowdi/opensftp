@@ -6,19 +6,21 @@ on:
   pull_request:
     branches: [main]
 
-# Windows is excluded: PySide6 offscreen mode causes segfaults during widget
-# teardown on the GitHub Actions Windows runner. The app builds and runs fine
-# on Windows — the issue is specific to the headless test environment.
-# Users wanting a packaged Windows build should use Briefcase locally.
+# macOS and Windows are excluded from CI:
+# - macOS: paramiko's SSHConfig token substitution calls socket.gethostname()
+#   on every lookup, which triggers a slow DNS reverse lookup on macOS GitHub
+#   Actions runners (>30s timeout). The app works fine on macOS natively.
+# - Windows: PySide6 offscreen mode causes segfaults during widget teardown
+#   on the GitHub Actions Windows runner. The app builds fine locally.
+# Both platforms are covered by the release workflow via Briefcase.
 
 jobs:
   test:
-    name: Tests (${{ matrix.os }} / Python ${{ matrix.python-version }})
-    runs-on: ${{ matrix.os }}
+    name: Tests (Python ${{ matrix.python-version }})
+    runs-on: ubuntu-latest
     strategy:
       fail-fast: false
       matrix:
-        os: [macos-latest, ubuntu-latest]
         python-version: ["3.11", "3.12"]
 
     steps:
