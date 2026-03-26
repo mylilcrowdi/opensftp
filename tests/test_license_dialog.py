@@ -51,8 +51,8 @@ class TestLicenseDialogUI:
         assert "Free" in dialog._status_label.text()
 
     def test_key_input_accepts_text(self, dialog):
-        dialog._key_input.setText("PRO-ABCD-1234-EFGH")
-        assert dialog._key_input.text() == "PRO-ABCD-1234-EFGH"
+        dialog._key_input.setText("SFTP-29A6B955-B054475D-B3D8E31A-963BE4E7")
+        assert dialog._key_input.text() == "SFTP-29A6B955-B054475D-B3D8E31A-963BE4E7"
 
 
 # ── 2. Activate Valid Key ─────────────────────────────────────────────────────
@@ -66,24 +66,24 @@ class TestActivateValidKey:
         d.close()
 
     def test_activate_valid_key_shows_pro(self, dialog, qapp):
-        dialog._key_input.setText("PRO-ABCD-1234-EFGH")
+        dialog._key_input.setText("SFTP-29A6B955-B054475D-B3D8E31A-963BE4E7")
         dialog._activate_btn.click()
         QApplication.processEvents()
         assert "Pro" in dialog._status_label.text()
 
     def test_activate_writes_license_file(self, dialog, qapp):
-        dialog._key_input.setText("PRO-ABCD-1234-EFGH")
+        dialog._key_input.setText("SFTP-29A6B955-B054475D-B3D8E31A-963BE4E7")
         dialog._activate_btn.click()
         assert dialog._manager.status() == LicenseStatus.PRO
 
     def test_activate_disables_input(self, dialog, qapp):
-        dialog._key_input.setText("PRO-ABCD-1234-EFGH")
+        dialog._key_input.setText("SFTP-29A6B955-B054475D-B3D8E31A-963BE4E7")
         dialog._activate_btn.click()
         QApplication.processEvents()
         assert not dialog._key_input.isEnabled()
 
     def test_activate_shows_deactivate_button(self, dialog, qapp):
-        dialog._key_input.setText("PRO-ABCD-1234-EFGH")
+        dialog._key_input.setText("SFTP-29A6B955-B054475D-B3D8E31A-963BE4E7")
         dialog._activate_btn.click()
         QApplication.processEvents()
         assert hasattr(dialog, "_deactivate_btn")
@@ -125,7 +125,7 @@ class TestDeactivate:
     @pytest.fixture
     def dialog(self, qapp, tmp_path):
         mgr = LicenseManager(tmp_path / "license.key")
-        mgr.activate("PRO-ABCD-1234-EFGH", "u@e.com")
+        mgr.activate("SFTP-29A6B955-B054475D-B3D8E31A-963BE4E7", "u@e.com")
         d = LicenseDialog(mgr)
         yield d
         d.close()
@@ -150,7 +150,7 @@ class TestDeactivate:
 class TestPrefilledPro:
     def test_pro_status_shown_on_open(self, qapp, tmp_path):
         mgr = LicenseManager(tmp_path / "license.key")
-        mgr.activate("PRO-ABCD-1234-EFGH", "u@e.com")
+        mgr.activate("SFTP-29A6B955-B054475D-B3D8E31A-963BE4E7", "u@e.com")
         dialog = LicenseDialog(mgr)
         assert "Pro" in dialog._status_label.text()
         assert not dialog._key_input.isEnabled()

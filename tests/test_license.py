@@ -49,7 +49,7 @@ class TestLicenseDetection:
     def test_valid_license_file_returns_true(self, license_dir):
         key_path = license_dir / "license.key"
         key_path.write_text(json.dumps({
-            "key": "PRO-XXXX-XXXX-XXXX",
+            "key": "SFTP-AAAABBBB-CCCCDDDD-EEEEFFFF-00001111",
             "email": "user@example.com",
             "activated_at": int(time.time()),
         }))
@@ -82,11 +82,11 @@ class TestLicenseValidation:
         return LicenseManager(key_path)
 
     def test_valid_key_format(self, mgr):
-        result = mgr.validate_key("PRO-ABCD-1234-EFGH")
+        result = mgr.validate_key("SFTP-29A6B955-B054475D-B3D8E31A-963BE4E7")
         assert result is True
 
     def test_invalid_key_too_short(self, mgr):
-        result = mgr.validate_key("PRO-SHORT")
+        result = mgr.validate_key("SFTP-SHORT")
         assert result is False
 
     def test_invalid_key_empty(self, mgr):
@@ -103,7 +103,7 @@ class TestLicenseValidation:
     def test_status_when_activated(self, mgr, tmp_path):
         key_path = tmp_path / "license.key"
         key_path.write_text(json.dumps({
-            "key": "PRO-ABCD-1234-EFGH",
+            "key": "SFTP-29A6B955-B054475D-B3D8E31A-963BE4E7",
             "email": "user@example.com",
             "activated_at": int(time.time()),
         }))
@@ -137,24 +137,24 @@ class TestActivation:
         return LicenseManager(tmp_path / "license.key")
 
     def test_activate_writes_key_file(self, mgr):
-        mgr.activate("PRO-ABCD-1234-EFGH", "user@example.com")
+        mgr.activate("SFTP-29A6B955-B054475D-B3D8E31A-963BE4E7", "user@example.com")
         assert mgr.key_path.exists()
 
     def test_activate_stores_key_and_email(self, mgr):
-        mgr.activate("PRO-ABCD-1234-EFGH", "user@example.com")
+        mgr.activate("SFTP-29A6B955-B054475D-B3D8E31A-963BE4E7", "user@example.com")
         data = json.loads(mgr.key_path.read_text())
-        assert data["key"] == "PRO-ABCD-1234-EFGH"
+        assert data["key"] == "SFTP-29A6B955-B054475D-B3D8E31A-963BE4E7"
         assert data["email"] == "user@example.com"
 
     def test_activate_stores_timestamp(self, mgr):
         before = int(time.time())
-        mgr.activate("PRO-ABCD-1234-EFGH", "user@example.com")
+        mgr.activate("SFTP-29A6B955-B054475D-B3D8E31A-963BE4E7", "user@example.com")
         data = json.loads(mgr.key_path.read_text())
         assert data["activated_at"] >= before
 
     def test_activate_changes_status_to_pro(self, mgr):
         assert mgr.status() == LicenseStatus.FREE
-        mgr.activate("PRO-ABCD-1234-EFGH", "user@example.com")
+        mgr.activate("SFTP-29A6B955-B054475D-B3D8E31A-963BE4E7", "user@example.com")
         assert mgr.status() == LicenseStatus.PRO
 
     def test_activate_invalid_key_raises(self, mgr):
@@ -163,7 +163,7 @@ class TestActivation:
 
     def test_activate_creates_parent_dir(self, tmp_path):
         mgr = LicenseManager(tmp_path / "nested" / "dir" / "license.key")
-        mgr.activate("PRO-ABCD-1234-EFGH", "user@example.com")
+        mgr.activate("SFTP-29A6B955-B054475D-B3D8E31A-963BE4E7", "user@example.com")
         assert mgr.key_path.exists()
 
 
@@ -175,7 +175,7 @@ class TestDeactivation:
     @pytest.fixture
     def mgr(self, tmp_path):
         mgr = LicenseManager(tmp_path / "license.key")
-        mgr.activate("PRO-ABCD-1234-EFGH", "user@example.com")
+        mgr.activate("SFTP-29A6B955-B054475D-B3D8E31A-963BE4E7", "user@example.com")
         return mgr
 
     def test_deactivate_removes_key_file(self, mgr):
@@ -202,7 +202,7 @@ class TestProRequired:
     def test_pro_user_can_execute(self, tmp_path):
         key_path = tmp_path / "license.key"
         key_path.write_text(json.dumps({
-            "key": "PRO-ABCD-1234-EFGH",
+            "key": "SFTP-29A6B955-B054475D-B3D8E31A-963BE4E7",
             "email": "u@e.com",
             "activated_at": int(time.time()),
         }))
@@ -256,7 +256,7 @@ class TestProGateWidget:
     @pytest.fixture
     def pro_mgr(self, tmp_path):
         mgr = LicenseManager(tmp_path / "license.key")
-        mgr.activate("PRO-ABCD-1234-EFGH", "u@e.com")
+        mgr.activate("SFTP-29A6B955-B054475D-B3D8E31A-963BE4E7", "u@e.com")
         return mgr
 
     def test_gate_blocks_free_user(self, qapp, free_mgr):
@@ -313,7 +313,7 @@ class TestLicenseCommandIntegration:
     def test_pro_command_enabled_for_pro_user(self, tmp_path):
         from sftp_ui.core.command_registry import Command, CommandRegistry
         mgr = LicenseManager(tmp_path / "license.key")
-        mgr.activate("PRO-ABCD-1234-EFGH", "u@e.com")
+        mgr.activate("SFTP-29A6B955-B054475D-B3D8E31A-963BE4E7", "u@e.com")
 
         reg = CommandRegistry()
         reg.register(Command(

@@ -33,7 +33,7 @@ class LicenseStatus(Enum):
     PRO = "pro"
 
 
-_KEY_PATTERN = re.compile(r"^PRO-[A-Z0-9]{4}-[A-Z0-9]{4}-[A-Z0-9]{4}$")
+_KEY_PATTERN = re.compile(r"^SFTP-[A-F0-9]{8}-[A-F0-9]{8}-[A-F0-9]{8}-[A-F0-9]{8}$")
 
 
 def _license_path() -> Path:

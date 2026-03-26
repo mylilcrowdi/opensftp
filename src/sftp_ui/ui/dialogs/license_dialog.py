@@ -41,7 +41,7 @@ class LicenseDialog(QDialog):
 
         # Key input
         self._key_input = QLineEdit()
-        self._key_input.setPlaceholderText("PRO-XXXX-XXXX-XXXX")
+        self._key_input.setPlaceholderText("SFTP-XXXXXXXX-XXXXXXXX-XXXXXXXX-XXXXXXXX")
         self._key_input.setStyleSheet("padding: 8px; font-family: monospace; font-size: 13px;")
         layout.addWidget(self._key_input)
 

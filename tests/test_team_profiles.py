@@ -301,7 +301,7 @@ class TestTeamProfilesProGate:
 
     def test_export_allowed_for_pro_user(self, tmp_path):
         mgr = LicenseManager(tmp_path / "license.key")
-        mgr.activate("PRO-ABCD-1234-EFGH", "u@e.com")
+        mgr.activate("SFTP-29A6B955-B054475D-B3D8E31A-963BE4E7", "u@e.com")
         pm = ProfileManager(mgr)
         result = pm.export([_sftp_conn()])
         assert result is not None
@@ -316,7 +316,7 @@ class TestTeamProfilesProGate:
 
     def test_import_allowed_for_pro_user(self, tmp_path):
         mgr = LicenseManager(tmp_path / "license.key")
-        mgr.activate("PRO-ABCD-1234-EFGH", "u@e.com")
+        mgr.activate("SFTP-29A6B955-B054475D-B3D8E31A-963BE4E7", "u@e.com")
         pm = ProfileManager(mgr)
         store = ConnectionStore(tmp_path / "connections.json")
         result = pm.import_to(export_connections([_sftp_conn()]), store)
@@ -379,7 +379,7 @@ class TestProfileManager:
     @pytest.fixture
     def pro_pm(self, tmp_path):
         mgr = LicenseManager(tmp_path / "license.key")
-        mgr.activate("PRO-ABCD-1234-EFGH", "u@e.com")
+        mgr.activate("SFTP-29A6B955-B054475D-B3D8E31A-963BE4E7", "u@e.com")
         return ProfileManager(mgr)
 
     def test_export_returns_json_string(self, pro_pm):
