@@ -234,6 +234,9 @@ class _BreadcrumbBar(QWidget):
             self.navigate_to.emit(path)
 
     def eventFilter(self, obj, event) -> bool:
+        import shiboken6
+        if not shiboken6.isValid(self):
+            return False
         if obj is self._editor and event.type() == QEvent.Type.KeyPress:
             if event.key() == Qt.Key.Key_Escape:
                 self._editor.setVisible(False)
@@ -282,8 +285,11 @@ class _BreadcrumbBar(QWidget):
 
         # Scroll to the far right so the current (deepest) segment is always visible
         from PySide6.QtCore import QTimer as _QTimer
-        _QTimer.singleShot(0, lambda: self._crumb_scroll.horizontalScrollBar().setValue(
-            self._crumb_scroll.horizontalScrollBar().maximum()
+        import shiboken6 as _shiboken
+        _QTimer.singleShot(0, lambda: (
+            self._crumb_scroll.horizontalScrollBar().setValue(
+                self._crumb_scroll.horizontalScrollBar().maximum()
+            ) if _shiboken.isValid(self._crumb_scroll) else None
         ))
 
 
@@ -430,6 +436,9 @@ class RemotePanel(QWidget):
 
     def eventFilter(self, obj, event) -> bool:
         """Keep skeleton overlay sized to the table viewport."""
+        import shiboken6
+        if not shiboken6.isValid(self):
+            return False
         if obj is self._table.viewport() and event.type() == QEvent.Type.Resize:
             self._skeleton.setGeometry(self._table.viewport().rect())
             self._empty_state.setGeometry(self._table.viewport().rect())

@@ -97,8 +97,14 @@ class TestSignalBridgeThreading:
         queue.enqueue(job)
         queue.start()
         time.sleep(0.3)
-        _process_events(300)
         queue.stop()
+        # Process events after stopping so worker threads are joined.
+        # Use short bursts to avoid triggering stale timers from other tests.
+        for _ in range(30):
+            qapp.processEvents()
+            if slot_threads:
+                break
+            time.sleep(0.01)
 
         assert len(slot_threads) >= 1
         assert slot_threads[0] is threading.main_thread()
