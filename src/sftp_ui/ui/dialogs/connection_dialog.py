@@ -61,6 +61,7 @@ from PySide6.QtWidgets import (
 )
 
 from sftp_ui.core.connection import CloudConfig, Connection, ConnectionStore, TunnelConfig
+from sftp_ui.core.connection_tester import test_sftp_connection, test_cloud_connection
 
 
 # ── Protocol labels / identifiers ─────────────────────────────────────────────
@@ -377,6 +378,24 @@ class ConnectionDialog(QDialog):
         self._error_label.setWordWrap(True)
         root.addWidget(self._error_label)
 
+        # test connection row
+        test_row = QHBoxLayout()
+        self._test_btn = QPushButton("Test Connection")
+        self._test_btn.setStyleSheet(
+            "QPushButton { padding: 6px 14px; border-radius: 4px;"
+            " border: 1px solid palette(mid); }"
+            "QPushButton:hover { background: palette(midlight); }"
+            "QPushButton:disabled { color: palette(mid); }"
+        )
+        self._test_btn.setEnabled(False)
+        self._test_btn.clicked.connect(self._on_test_connection)
+        test_row.addWidget(self._test_btn)
+
+        self._test_status_label = QLabel("")
+        self._test_status_label.setWordWrap(True)
+        test_row.addWidget(self._test_status_label, 1)
+        root.addLayout(test_row)
+
         # buttons
         buttons = QDialogButtonBox(
             QDialogButtonBox.StandardButton.Cancel |
@@ -389,6 +408,13 @@ class ConnectionDialog(QDialog):
         buttons.accepted.connect(self._on_accept)
         buttons.rejected.connect(self.reject)
         root.addWidget(buttons)
+
+        # Wire up field changes to update test button state
+        self._name.textChanged.connect(self._update_test_btn_state)
+        self._host.textChanged.connect(self._update_test_btn_state)
+        self._user.textChanged.connect(self._update_test_btn_state)
+        self._cloud_bucket.textChanged.connect(self._update_test_btn_state)
+        self._protocol_combo.currentIndexChanged.connect(self._update_test_btn_state)
 
     # ── protocol switching ────────────────────────────────────────────────────
 
@@ -651,3 +677,57 @@ class ConnectionDialog(QDialog):
     def result_connection(self) -> Connection:
         assert self._result_conn is not None
         return self._result_conn
+
+    # ── test connection ────────────────────────────────────────────────────
+
+    def _update_test_btn_state(self) -> None:
+        """Enable/disable the Test button based on whether required fields are filled."""
+        protocol = self._current_protocol()
+        if protocol == "sftp":
+            enabled = bool(
+                self._name.text().strip()
+                and self._host.text().strip()
+                and self._user.text().strip()
+            )
+        else:
+            enabled = bool(
+                self._name.text().strip()
+                and self._cloud_bucket.text().strip()
+            )
+        self._test_btn.setEnabled(enabled)
+
+    def _on_test_connection(self) -> None:
+        """Run a quick connection test using the current form fields."""
+        self._test_btn.setEnabled(False)
+        self._test_status_label.setText("Testing...")
+        self._test_status_label.setStyleSheet("color: palette(text); font-size: 12px;")
+
+        protocol = self._current_protocol()
+        if protocol == "sftp":
+            ok, msg = test_sftp_connection(
+                host=self._host.text().strip(),
+                port=self._port.value(),
+                user=self._user.text().strip(),
+                password=self._password.text() or None,
+                key_path=self._key_path.text().strip() or None,
+                key_passphrase=self._key_passphrase.text() or None,
+                use_agent=self._use_agent.isChecked(),
+            )
+        else:
+            ok, msg = test_cloud_connection(
+                provider=protocol,
+                bucket=self._cloud_bucket.text().strip(),
+                access_key=self._cloud_access_key.text().strip(),
+                secret_key=self._cloud_secret_key.text().strip(),
+                region=self._cloud_region.text().strip(),
+                endpoint_url=self._cloud_endpoint_url.text().strip(),
+            )
+
+        if ok:
+            self._test_status_label.setText(msg)
+            self._test_status_label.setStyleSheet("color: #a6e3a1; font-size: 12px;")
+        else:
+            self._test_status_label.setText(msg)
+            self._test_status_label.setStyleSheet("color: #f38ba8; font-size: 12px;")
+
+        self._update_test_btn_state()
