@@ -21,9 +21,11 @@ from PySide6.QtWidgets import (
 )
 
 from sftp_ui.core.connection import Connection, ConnectionStore
+from sftp_ui.core.platform_utils import open_ssh_terminal
 from sftp_ui.core.sftp_client import AuthenticationError, ConnectionError, SFTPClient
 from sftp_ui.core.transfer import TransferDirection, TransferEngine, TransferJob
 from sftp_ui.core.queue import TransferQueue
+from sftp_ui.core.transfer_history import TransferHistory
 from sftp_ui.core.ui_state import UIState
 from sftp_ui.ui.dialogs.connection_dialog import ConnectionDialog
 from sftp_ui.ui.dialogs.connection_manager import ConnectionManagerDialog
@@ -92,6 +94,9 @@ class MainWindow(QMainWindow):
         # while the main thread shows the dialog and sets the result.
         self._overwrite_event: threading.Event = threading.Event()
         self._overwrite_result: str = _OVERWRITE_CANCEL
+
+        # Persistent transfer history
+        self._history = TransferHistory(Path.home() / ".config" / "sftp-ui" / "transfer_history.jsonl")
 
         self._build_ui()
         self._connect_signals()
@@ -240,6 +245,7 @@ class MainWindow(QMainWindow):
         self._remote_panel.upload_requested.connect(self._on_upload_requested)
         self._remote_panel.download_requested.connect(self._on_download_requested)
         self._remote_panel.remote_copy_requested.connect(self._on_remote_copy_requested)
+        self._remote_panel.open_terminal_requested.connect(self._on_open_terminal_requested)
         self._local_panel.download_drop_requested.connect(self._on_download_drop)
         self._remote_panel.status_message.connect(self._status.showMessage)
         self._local_panel.status_message.connect(self._status.showMessage)
@@ -993,6 +999,35 @@ class MainWindow(QMainWindow):
         # (skip QFileDialog since user chose the target by dropping)
         self._do_download_to(entries, local_dir)
 
+    def _on_open_terminal_requested(self, remote_path: str) -> None:
+        """Open the OS terminal emulator with an SSH session pre-cd'd into *remote_path*.
+
+        Reads host/user/port/key_path from the active connection and delegates
+        to :func:`~sftp_ui.core.platform_utils.open_ssh_terminal` which handles
+        macOS (Terminal.app), Windows (Windows Terminal / cmd.exe), and the most
+        common Linux terminal emulators.
+
+        Args:
+            remote_path: The remote directory path to ``cd`` into after login.
+        """
+        conn = self._active_conn
+        if conn is None:
+            self._signals.status.emit("Not connected — cannot open terminal.")
+            return
+
+        try:
+            open_ssh_terminal(
+                host=conn.host,
+                user=conn.user,
+                port=conn.port,
+                remote_path=remote_path,
+                key_path=conn.key_path,
+            )
+            label = remote_path or "~"
+            self._signals.status.emit(f"Opened SSH terminal at {label}")
+        except Exception as exc:
+            self._signals.status.emit(f"Terminal launch failed: {exc}")
+
     def _on_remote_copy_requested(self, entry_dicts: list, dest_dir: str) -> None:
         """Handle drag-drop between two remote locations (same server, temp-buffer copy).
 
@@ -1204,6 +1239,7 @@ class MainWindow(QMainWindow):
 
     def _on_job_done(self, job) -> None:
         self._transfer_panel.job_finished(job)
+        self._history.record(job)
         if self._queue and self._queue.pending_count() == 0:
             self._status.showMessage(f"Done — {job.filename} transferred")
             self._refresh_debounce.start()
@@ -1212,10 +1248,12 @@ class MainWindow(QMainWindow):
 
     def _on_job_failed(self, job) -> None:
         self._transfer_panel.job_finished(job)
+        self._history.record(job)
         self._status.showMessage(f"Failed: {job.filename} — {job.error}")
 
     def _on_job_cancelled(self, job) -> None:
         self._transfer_panel.job_finished(job)
+        self._history.record(job)
         # Suppress status-bar noise for intentional skips (up-to-date / skip-existing).
         # Those have job.error set to a reason string; only user-initiated cancellations
         # have no error message.
