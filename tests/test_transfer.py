@@ -18,6 +18,7 @@ We test:
 from __future__ import annotations
 
 import os
+import threading
 import time
 from unittest.mock import MagicMock, call, patch
 
@@ -266,6 +267,129 @@ class TestCancellation:
         job = make_job(path)
         # Should not raise TransferError
         engine.upload(job, cancel_flag=lambda: True)
+
+
+# ── cancellation with blocking I/O ────────────────────────────────────────────
+
+class _SlowSFTP(FakeSFTPClient):
+    """FakeSFTPClient that sleeps on every write() to simulate a slow network."""
+
+    def __init__(self, *args, write_delay: float = 0.05, **kwargs):
+        super().__init__(*args, **kwargs)
+        self._write_delay = write_delay
+
+    def open_remote(self, remote_path: str, mode: str = "rb"):
+        inner = super().open_remote(remote_path, mode)
+        delay = self._write_delay
+        original_write = inner.write
+
+        def slow_write(data):
+            time.sleep(delay)
+            return original_write(data)
+
+        inner.write = slow_write
+        return inner
+
+
+class TestCancellationWithLatency:
+    """
+    These tests simulate the real-world cancel scenario: the cancel flag is set
+    while remote_f.write() is blocking (mid-network-write).  The current design
+    checks the flag only *between* chunks, so cancellation is delayed by at most
+    one write call.  These tests verify that cancellation still happens and is
+    bounded in time.
+    """
+
+    def test_cancel_during_blocking_write_stops_transfer(self, make_local_file):
+        """Cancel set while write() is blocking — transfer must stop and mark CANCELLED."""
+        path, _ = make_local_file(4096)
+        cancel_event = threading.Event()
+
+        # 50 ms per chunk; 8 chunks total at chunk_size=512
+        sftp = _SlowSFTP(write_delay=0.05)
+        engine = make_engine(sftp, chunk_size=512)
+        job = make_job(path)
+
+        t = threading.Thread(
+            target=lambda: engine.upload(job, cancel_flag=cancel_event.is_set),
+            daemon=True,
+        )
+        t.start()
+        # Cancel after ~10 ms — write of chunk 1 is still in progress (takes 50 ms)
+        time.sleep(0.01)
+        cancel_event.set()
+        # Give the thread at most one extra chunk-time to notice the flag
+        t.join(timeout=0.5)
+
+        assert not t.is_alive(), "upload thread did not stop after cancel"
+        assert job.state == TransferState.CANCELLED
+
+    def test_cancel_detected_within_one_chunk_delay(self, make_local_file):
+        """Latency between cancel() and actual stop is bounded by a single write duration."""
+        path, _ = make_local_file(4096)
+        cancel_event = threading.Event()
+
+        write_delay = 0.05  # 50 ms
+        sftp = _SlowSFTP(write_delay=write_delay)
+        engine = make_engine(sftp, chunk_size=512)
+        job = make_job(path)
+
+        t = threading.Thread(
+            target=lambda: engine.upload(job, cancel_flag=cancel_event.is_set),
+            daemon=True,
+        )
+        t.start()
+        cancel_event.set()
+        cancel_set_at = time.monotonic()
+        # Allow 2× write_delay as generous margin (one chunk in flight + overhead)
+        t.join(timeout=write_delay * 2 + 0.1)
+        elapsed = time.monotonic() - cancel_set_at
+
+        assert not t.is_alive(), "thread still alive — cancel latency too high"
+        assert elapsed < write_delay * 3, (
+            f"cancel took {elapsed:.3f}s — more than 3 chunk-write durations"
+        )
+        assert job.state == TransferState.CANCELLED
+
+    def test_bytes_done_does_not_exceed_total_after_cancel(self, make_local_file):
+        """Partial progress is sane: bytes_done ≤ total_bytes after a mid-write cancel."""
+        path, content = make_local_file(4096)
+        cancel_event = threading.Event()
+
+        sftp = _SlowSFTP(write_delay=0.04)
+        engine = make_engine(sftp, chunk_size=512)
+        job = make_job(path)
+
+        t = threading.Thread(
+            target=lambda: engine.upload(job, cancel_flag=cancel_event.is_set),
+            daemon=True,
+        )
+        t.start()
+        time.sleep(0.01)
+        cancel_event.set()
+        t.join(timeout=0.5)
+
+        assert job.bytes_done <= job.total_bytes
+
+    def test_finished_at_set_on_cancel(self, make_local_file):
+        """finished_at is recorded even when the transfer is cancelled mid-write."""
+        path, _ = make_local_file(4096)
+        cancel_event = threading.Event()
+
+        sftp = _SlowSFTP(write_delay=0.04)
+        engine = make_engine(sftp, chunk_size=512)
+        job = make_job(path)
+
+        t = threading.Thread(
+            target=lambda: engine.upload(job, cancel_flag=cancel_event.is_set),
+            daemon=True,
+        )
+        t.start()
+        time.sleep(0.01)
+        cancel_event.set()
+        t.join(timeout=0.5)
+
+        assert job.finished_at is not None
 
 
 # ── error handling ────────────────────────────────────────────────────────────
