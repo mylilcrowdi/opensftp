@@ -530,8 +530,8 @@ class ConnectionDialog(QDialog):
                 user=self._tunnel_user.text().strip(),
                 port=self._tunnel_port.value(),
                 key_path=self._tunnel_key_path.text().strip() or None,
-                key_passphrase=self._tunnel_key_passphrase.text() or None,
-                password=self._tunnel_password.text() or None,
+                key_passphrase=self._tunnel_key_passphrase.text().strip() or None,
+                password=self._tunnel_password.text().strip() or None,
             )
         except ValueError as exc:
             raise ValueError(str(exc)) from exc
@@ -633,8 +633,9 @@ class ConnectionDialog(QDialog):
             port=self._port.value(),
             group=self._group.text().strip(),
             key_path=self._key_path.text().strip() or None,
-            key_passphrase=self._key_passphrase.text() or None,
-            password=self._password.text() or None,
+            key_passphrase=self._key_passphrase.text().strip() or None,
+            password=self._password.text().strip() or None,
+            use_agent=self._use_agent.isChecked(),
             tunnel=tunnel,
             favorite=self._favorite.isChecked(),
             protocol="sftp",
@@ -672,6 +673,8 @@ class ConnectionDialog(QDialog):
             favorite=self._favorite.isChecked(),
             id=self._conn.id if self._conn else str(uuid.uuid4()),
             last_connected=self._conn.last_connected if self._conn else 0.0,
+            keepalive_interval=self._conn.keepalive_interval if self._conn else 30,
+            use_agent=self._conn.use_agent if self._conn else False,
         )
 
     def result_connection(self) -> Connection:

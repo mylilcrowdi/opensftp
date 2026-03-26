@@ -209,7 +209,7 @@ class ConnectionStore:
 
     def get(self, connection_id: str) -> Connection:
         try:
-            return self._connections[connection_id]
+            return dataclasses.replace(self._connections[connection_id])
         except KeyError:
             raise KeyError(f"No connection with id {connection_id!r}")
 
@@ -268,6 +268,17 @@ class ConnectionStore:
                             c.key_passphrase = _keyring.get_password(_KEYRING_SERVICE, f"{c.id}:key_passphrase")
                         except Exception:
                             c.key_passphrase = None
+                    if c.cloud is not None:
+                        if c.cloud.access_key == _KEYCHAIN_SENTINEL:
+                            try:
+                                c.cloud.access_key = _keyring.get_password(_KEYRING_SERVICE, f"{c.id}:cloud_access_key") or ""
+                            except Exception:
+                                c.cloud.access_key = ""
+                        if c.cloud.secret_key == _KEYCHAIN_SENTINEL:
+                            try:
+                                c.cloud.secret_key = _keyring.get_password(_KEYRING_SERVICE, f"{c.id}:cloud_secret_key") or ""
+                            except Exception:
+                                c.cloud.secret_key = ""
                 self._connections[c.id] = c
             except (TypeError, ValueError):
                 continue  # skip corrupt entries
@@ -290,5 +301,19 @@ class ConnectionStore:
                         d["key_passphrase"] = _KEYCHAIN_SENTINEL
                     except Exception:
                         pass
+                cloud = d.get("cloud")
+                if cloud:
+                    if cloud.get("access_key") and cloud["access_key"] != _KEYCHAIN_SENTINEL:
+                        try:
+                            _keyring.set_password(_KEYRING_SERVICE, f"{c.id}:cloud_access_key", cloud["access_key"])
+                            cloud["access_key"] = _KEYCHAIN_SENTINEL
+                        except Exception:
+                            pass
+                    if cloud.get("secret_key") and cloud["secret_key"] != _KEYCHAIN_SENTINEL:
+                        try:
+                            _keyring.set_password(_KEYRING_SERVICE, f"{c.id}:cloud_secret_key", cloud["secret_key"])
+                            cloud["secret_key"] = _KEYCHAIN_SENTINEL
+                        except Exception:
+                            pass
             data.append(d)
         self._path.write_text(json.dumps(data, indent=2), encoding="utf-8")

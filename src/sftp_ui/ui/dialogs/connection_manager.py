@@ -28,6 +28,8 @@ def _time_ago(ts: float) -> str:
     if ts == 0:
         return "Never"
     diff = time.time() - ts
+    if diff < 0:
+        return "Just now"
     if diff < 60:
         return "Just now"
     if diff < 3600:
@@ -68,7 +70,12 @@ class _ConnItem(QWidget):
         f.setBold(True)
         name_lbl.setFont(f)
 
-        host_lbl = QLabel(f"{conn.user}@{conn.host}:{conn.port}")
+        if conn.protocol == "sftp":
+            host_text = f"{conn.user}@{conn.host}:{conn.port}"
+        else:
+            bucket = conn.cloud.bucket if conn.cloud else "?"
+            host_text = f"{conn.protocol.upper()} — {bucket}"
+        host_lbl = QLabel(host_text)
         host_lbl.setStyleSheet("color: #6c7086; font-size: 11px;")
 
         info.addWidget(name_lbl)
@@ -250,7 +257,7 @@ class ConnectionManagerDialog(QDialog):
 
     def _on_new(self) -> None:
         from sftp_ui.ui.dialogs.connection_dialog import ConnectionDialog
-        dlg = ConnectionDialog(self)
+        dlg = ConnectionDialog(self, store=self._store)
         if dlg.exec():
             self._store.add(dlg.result_connection())
             self._populate()
@@ -260,7 +267,7 @@ class ConnectionManagerDialog(QDialog):
         if not conn:
             return
         from sftp_ui.ui.dialogs.connection_dialog import ConnectionDialog
-        dlg = ConnectionDialog(self, conn=conn)
+        dlg = ConnectionDialog(self, conn=conn, store=self._store)
         if dlg.exec():
             self._store.update(dlg.result_connection())
             self._populate()
