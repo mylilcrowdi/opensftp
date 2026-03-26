@@ -26,6 +26,7 @@ if TYPE_CHECKING:
 AVAILABLE_THEMES: list[str] = [
     "dark",
     "light",
+    "frost",
     "nord",
     "dracula",
     "solarized_dark",
@@ -35,6 +36,7 @@ AVAILABLE_THEMES: list[str] = [
 THEME_LABELS: dict[str, str] = {
     "dark":          "Dark (Catppuccin Mocha)",
     "light":         "Light (Catppuccin Latte)",
+    "frost":         "Frost (Glassmorphism)",
     "nord":          "Nord",
     "dracula":       "Dracula",
     "solarized_dark": "Solarized Dark",
@@ -44,6 +46,7 @@ THEME_LABELS: dict[str, str] = {
 THEME_SWATCHES: dict[str, tuple[str, str, str]] = {
     "dark":          ("#1e1e2e", "#cdd6f4", "#89b4fa"),
     "light":         ("#eff1f5", "#4c4f69", "#1e66f5"),
+    "frost":         ("#0f1123", "#d4d8f0", "#00d4ff"),
     "nord":          ("#2e3440", "#d8dee9", "#88c0d0"),
     "dracula":       ("#282a36", "#f8f8f2", "#bd93f9"),
     "solarized_dark": ("#002b36", "#839496", "#268bd2"),

@@ -49,8 +49,8 @@ def mgr(qapp):
 # ── AVAILABLE_THEMES ──────────────────────────────────────────────────────────
 
 class TestAvailableThemes:
-    def test_count_is_five(self):
-        assert len(AVAILABLE_THEMES) == 5
+    def test_count_is_six(self):
+        assert len(AVAILABLE_THEMES) == 6
 
     def test_contains_dark_and_light(self):
         assert "dark" in AVAILABLE_THEMES
