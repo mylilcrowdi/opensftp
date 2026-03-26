@@ -35,11 +35,12 @@ def animations_on():
 
 @pytest.fixture
 def widget(qapp):
+    import shiboken6
     w = QLabel("test")
     yield w
     w.close()
-    w.deleteLater()
-    QApplication.processEvents()
+    if shiboken6.isValid(w):
+        shiboken6.delete(w)
 
 
 # ── _ensure_opacity_effect ────────────────────────────────────────────────────
@@ -60,14 +61,15 @@ class TestEnsureOpacityEffect:
         assert e1 is e2
 
     def test_replaces_non_opacity_effect(self, qapp):
+        import shiboken6
         from PySide6.QtWidgets import QGraphicsBlurEffect
         w = QLabel()
         w.setGraphicsEffect(QGraphicsBlurEffect(w))
         effect = tr._ensure_opacity_effect(w)
         assert isinstance(effect, QGraphicsOpacityEffect)
         w.close()
-        w.deleteLater()
-        QApplication.processEvents()
+        if shiboken6.isValid(w):
+            shiboken6.delete(w)
 
 
 # ── fade_in ───────────────────────────────────────────────────────────────────

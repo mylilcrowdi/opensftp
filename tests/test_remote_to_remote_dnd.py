@@ -50,11 +50,13 @@ def _make_mime(entry_dicts: list[dict]) -> QMimeData:
 
 @pytest.fixture
 def remote_panel():
+    import shiboken6
     panel = RemotePanel()
     panel.resize(600, 400)
     yield panel
     panel.close()
-    panel.deleteLater()
+    if shiboken6.isValid(panel):
+        shiboken6.delete(panel)
 
 
 # ---------------------------------------------------------------------------
@@ -63,23 +65,28 @@ def remote_panel():
 
 class TestDropOverlayLabel:
     def test_default_label_is_upload(self):
+        import shiboken6
         overlay = _DropOverlay()
         try:
             assert overlay._label == "Drop to upload"
         finally:
             overlay.close()
-            overlay.deleteLater()
+            if shiboken6.isValid(overlay):
+                shiboken6.delete(overlay)
 
     def test_set_label_updates_text(self):
+        import shiboken6
         overlay = _DropOverlay()
         try:
             overlay.set_label("Drop to copy")
             assert overlay._label == "Drop to copy"
         finally:
             overlay.close()
-            overlay.deleteLater()
+            if shiboken6.isValid(overlay):
+                shiboken6.delete(overlay)
 
     def test_set_label_triggers_update(self):
+        import shiboken6
         overlay = _DropOverlay()
         try:
             with patch.object(overlay, "update") as mock_update:
@@ -87,7 +94,8 @@ class TestDropOverlayLabel:
                 mock_update.assert_called_once()
         finally:
             overlay.close()
-            overlay.deleteLater()
+            if shiboken6.isValid(overlay):
+                shiboken6.delete(overlay)
 
 
 # ---------------------------------------------------------------------------
