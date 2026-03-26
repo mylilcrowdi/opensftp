@@ -19,22 +19,35 @@
 */
 
 /* ── Base ──────────────────────────────────────────────────────────────── */
-QMainWindow, QDialog {
-    background-color: #0f1123;
-    color: #d4d8f0;
-    font-family: ".AppleSystemUIFont", "Helvetica Neue", Arial;
-    font-size: 13px;
-}
-QWidget {
-    color: #d4d8f0;
-    font-family: ".AppleSystemUIFont", "Helvetica Neue", Arial;
-    font-size: 13px;
-}
+/* NOTE: QWidget background set to transparent below (glass panel support).
+   Only QMainWindow and QDialog get a solid background. */
 
 /* Glass panels: make children transparent so the GlassFrame paintEvent shows */
 QSplitter { background: transparent; }
 QSplitter::handle { background-color: transparent; width: 4px; }
 QSplitter::handle:hover { background-color: #00d4ff20; }
+
+/* Force transparency on all intermediate panel containers.
+   This is the KEY to glassmorphism: every QWidget is transparent,
+   so the GlassFrame paintEvent shows through. Only top-level
+   windows (QMainWindow, QDialog) and specific widgets get solid bg. */
+QWidget {
+    background: transparent;
+    color: #d4d8f0;
+    font-family: ".AppleSystemUIFont", "Helvetica Neue", Arial;
+    font-size: 13px;
+}
+QMainWindow {
+    background-color: #0b0d17;
+    color: #d4d8f0;
+}
+QDialog {
+    background-color: #0f1123;
+    border: 1px solid #1e2140;
+    border-radius: 12px;
+    color: #d4d8f0;
+}
+QMessageBox { background-color: #0f1123; }
 
 /* ── Toolbar / header areas ─────────────────────────────────────────────── */
 QWidget#toolbar {
@@ -261,17 +274,8 @@ QScrollBar::handle:horizontal {
 QScrollBar::handle:horizontal:hover { background-color: #363a6a; }
 QScrollBar::add-line:horizontal, QScrollBar::sub-line:horizontal { width: 0; }
 
-/* ── Dialogs ─────────────────────────────────────────────────────────────── */
-QDialog {
-    background-color: #0f1123;
-    border: 1px solid #1e2140;
-    border-radius: 12px;
-}
+/* ── Dialogs (solid bg already set in base section) ──────────────────────── */
 QDialogButtonBox QPushButton { min-width: 80px; }
-
-QMessageBox {
-    background-color: #0f1123;
-}
 QMessageBox QPushButton { min-width: 80px; }
 
 /* ── Tooltips ────────────────────────────────────────────────────────────── */
