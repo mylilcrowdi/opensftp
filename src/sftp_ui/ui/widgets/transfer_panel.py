@@ -84,6 +84,15 @@ class _JobItem(QWidget):
         self._icon.setFixedWidth(16)
         self._name = QLabel()
         self._name.setSizePolicy(QSizePolicy.Policy.Expanding, QSizePolicy.Policy.Preferred)
+
+        self._progress_bar = SmoothProgressBar()
+        self._progress_bar.setRange(0, 100)
+        self._progress_bar.setValue(0)
+        self._progress_bar.setTextVisible(False)
+        self._progress_bar.setFixedHeight(4)
+        self._progress_bar.setFixedWidth(80)
+        self._progress_bar.setVisible(False)
+
         self._status = QLabel()
         self._status.setStyleSheet("color: #7f849c; font-size: 11px;")
         self._resume_btn = QPushButton("↻ Resume")
@@ -94,6 +103,7 @@ class _JobItem(QWidget):
 
         row.addWidget(self._icon)
         row.addWidget(self._name)
+        row.addWidget(self._progress_bar)
         row.addWidget(self._status)
         row.addWidget(self._resume_btn)
 
@@ -108,14 +118,23 @@ class _JobItem(QWidget):
         self._icon.setStyleSheet(f"color: {icon_color}; font-weight: bold;")
         self._name.setText(self.job.filename)
 
+        # Per-file progress bar: visible only while running
+        show_progress = state == TransferState.RUNNING and self.job.total_bytes > 0
+        self._progress_bar.setVisible(show_progress)
+        if show_progress:
+            pct = max(0, min(100, int(self.job.progress * 100)))
+            self._progress_bar.setValue(pct)
+
         if state == TransferState.CANCELLED and self.job.error:
             status_text = self.job.error.capitalize()
         elif state == TransferState.FAILED:
             status_text = f"Failed: {self.job.error or ''}"
+        elif state == TransferState.RUNNING:
+            pct = int(self.job.progress * 100)
+            status_text = f"{pct}%"
         else:
             status_text = {
                 TransferState.PENDING:   "Pending",
-                TransferState.RUNNING:   "Transferring…",
                 TransferState.DONE:      "Done",
                 TransferState.CANCELLED: "Cancelled",
                 TransferState.PAUSED:    "Paused",
