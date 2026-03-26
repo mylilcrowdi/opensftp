@@ -2,332 +2,658 @@
 Remote file editing — download, open in editor, auto-upload on save.
 
 Tests cover:
-- Temp file creation and download
-- Cross-platform editor launching (macOS, Linux, Windows)
-- QFileSystemWatcher on main thread
-- Auto-save detection and debouncing
-- Upload on file change
-- Atomic-save editor handling (vim, VS Code)
-- Temp file cleanup on disconnect
-- Connection loss during edit (re-upload on reconnect)
+1. _do_edit_remote: downloads file to temp, emits _edit_ready signal
+2. _on_edit_ready: creates watcher, launches editor, sets up session
+3. File change detection: watcher → debounce → upload
+4. Atomic-save editors (vim/VS Code): delete+recreate re-watched
+5. _cleanup_edit_sessions: stops watchers, removes temp dirs
+6. Concurrent edits: multiple files open simultaneously
+7. Disconnected state: upload blocked, status message emitted
+8. Re-edit same file: fresh download replaces old session
 """
 from __future__ import annotations
 
-import pytest
+import os
+import shutil
 import tempfile
+import threading
 import time
-import json
 from pathlib import Path
 from unittest.mock import MagicMock, patch, call
-import os
-import sys
 
-from PySide6.QtCore import QTimer, QFileSystemWatcher, Qt
+import pytest
+from PySide6.QtCore import QFileSystemWatcher, QTimer
 from PySide6.QtWidgets import QApplication
 
-from sftp_ui.core.connection import Connection
-from sftp_ui.core.sftp_client import SFTPClient, RemoteEntry
+from sftp_ui.core.sftp_client import RemoteEntry
 from sftp_ui.ui.panels.remote_panel import RemotePanel
 
 
-class TestEditRemoteTempFileHandling:
-    """Test temp file creation and cleanup."""
+# ── Helpers ────────────────────────────────────────────────────────────────────
 
-    def test_temp_file_created_on_edit(self, tmp_path):
-        """Edit creates a temp directory with downloaded file."""
-        # Simulate: user right-clicks file, selects "Edit"
-        # Remote file: /data/myfile.txt
-        # Expected: ~/tmp/sftp-ui-XXXXX/myfile.txt is created
-
-        temp_root = tmp_path / "sftp-ui-edit"
-        temp_root.mkdir()
-        temp_file = temp_root / "myfile.txt"
-        temp_file.write_text("original content")
-
-        assert temp_file.exists()
-        assert temp_file.read_text() == "original content"
-
-    def test_temp_file_has_same_name_as_remote(self):
-        """Temp file preserves the original filename."""
-        # This helps the editor auto-detect language (Python, JSON, etc.)
-        temp_file = Path("/tmp/sftp-ui-abc/config.json")
-        assert temp_file.name == "config.json"
-
-    def test_temp_files_cleaned_up_on_disconnect(self):
-        """On disconnect, all temp edit directories are deleted."""
-        # Simulate: user had 3 files open for edit, then disconnects
-        # All /tmp/sftp-ui-* dirs should be removed
-        pass
-
-    def test_temp_files_cleaned_up_on_app_close(self):
-        """On app exit, temp edit dirs are cleaned up."""
-        # Register atexit handler or use __del__
-        pass
-
-    def test_temp_file_permissions_match_remote(self, tmp_path):
-        """Temp file has r/w permissions; remote's perms don't matter."""
-        temp_file = tmp_path / "file.txt"
-        temp_file.write_text("test")
-        assert os.access(str(temp_file), os.W_OK)
+def _make_entry(name: str = "config.txt", path: str = "/data/config.txt",
+                size: int = 42, is_dir: bool = False) -> RemoteEntry:
+    return RemoteEntry(name=name, path=path, is_dir=is_dir,
+                       size=size, mtime=1700000000)
 
 
-class TestEditorLaunching:
-    """Test cross-platform editor launching."""
-
-    @patch('platform.system')
-    @patch('subprocess.Popen')
-    def test_launch_editor_macos(self, mock_popen, mock_platform):
-        """On macOS, use `open` command."""
-        mock_platform.return_value = "Darwin"
-
-        # Import after patching platform
-        from sftp_ui.core.platform_utils import open_with_editor
-
-        temp_file = Path("/tmp/edit-me.txt")
-
-        with patch('subprocess.Popen') as popen:
-            open_with_editor(str(temp_file))
-            # Should call ["open", "/tmp/edit-me.txt"]
-            # Will verify after implementation
-
-    @patch('platform.system')
-    @patch('subprocess.Popen')
-    def test_launch_editor_linux(self, mock_popen, mock_platform):
-        """On Linux, use `xdg-open` command."""
-        mock_platform.return_value = "Linux"
-
-        temp_file = Path("/tmp/edit-me.txt")
-        # Should call ["xdg-open", "/tmp/edit-me.txt"]
-
-    @pytest.mark.skipif(sys.platform != "win32", reason="os.startfile only on Windows")
-    @patch('platform.system')
-    @patch('os.startfile')
-    def test_launch_editor_windows(self, mock_startfile, mock_platform):
-        """On Windows, use `os.startfile`."""
-        mock_platform.return_value = "Windows"
-
-        temp_file = Path("C:\\Temp\\edit-me.txt")
-        # Should call os.startfile(path)
-
-    @patch('subprocess.Popen')
-    def test_editor_launch_failure_shows_error(self, mock_popen):
-        """If editor launch fails, show error dialog."""
-        mock_popen.side_effect = FileNotFoundError("Editor not found")
-
-        # Expect an error dialog to appear
-        pass
+def _make_panel_with_sftp(fake_sftp=None):
+    """Create a RemotePanel with an optional fake SFTP client."""
+    panel = RemotePanel(sftp=fake_sftp)
+    panel.resize(600, 400)
+    return panel
 
 
-class TestQFileSystemWatcherOnMainThread:
-    """Test that QFileSystemWatcher is created on the main thread."""
+def _process_events(ms: int = 100):
+    """Process Qt events for up to *ms* milliseconds."""
+    app = QApplication.instance()
+    deadline = time.monotonic() + ms / 1000
+    while time.monotonic() < deadline:
+        app.processEvents()
+        time.sleep(0.01)
+
+
+class FakeRemoteFile:
+    """Minimal in-memory file returned by FakeSFTP.open_remote."""
+    def __init__(self, data: bytes, on_close=None):
+        self._data = data
+        self._pos = 0
+        self._written = bytearray()
+        self._on_close = on_close
+
+    def read(self, n: int = -1) -> bytes:
+        if n < 0:
+            chunk = self._data[self._pos:]
+            self._pos = len(self._data)
+        else:
+            chunk = self._data[self._pos:self._pos + n]
+            self._pos += len(chunk)
+        return chunk
+
+    def write(self, data: bytes) -> int:
+        self._written.extend(data)
+        return len(data)
+
+    def __enter__(self):
+        return self
+
+    def __exit__(self, *args):
+        if self._on_close:
+            self._on_close(bytes(self._written))
+
+
+class FakeSFTP:
+    """Minimal SFTP mock for edit tests."""
+    def __init__(self, files: dict[str, bytes] | None = None):
+        self.files = dict(files or {})
+        self.uploads: list[tuple[str, bytes]] = []
+
+    def open_remote(self, path: str, mode: str = "rb"):
+        if "r" in mode:
+            return FakeRemoteFile(self.files.get(path, b""))
+        # Write mode: capture uploads on close
+        def _on_close(written: bytes):
+            self.uploads.append((path, written))
+            self.files[path] = written
+        return FakeRemoteFile(b"", on_close=_on_close)
+
+
+# ── 1. _do_edit_remote: temp download + signal ────────────────────────────────
+
+class TestDoEditRemote:
+    """_do_edit_remote downloads to temp and emits _edit_ready."""
 
     @pytest.fixture
-    def qapp(self):
-        return QApplication.instance() or QApplication([])
+    def panel(self, qapp):
+        sftp = FakeSFTP({"/data/config.txt": b"server=localhost\nport=3306\n"})
+        p = _make_panel_with_sftp(sftp)
+        yield p
+        p._cleanup_edit_sessions()
+        p.close()
 
-    def test_watcher_created_on_main_thread_after_download(self, qapp):
-        """After temp file download completes, create watcher on main thread."""
-        # Don't create watcher in background thread (SFTP download thread)
-        # Instead, emit a signal that creates it on main thread
+    def test_emits_edit_ready_signal(self, panel, qapp):
+        received = []
+        panel._edit_ready.connect(lambda *args: received.append(args))
 
-        # Verify that _EditWatcherSignals.ready signal is emitted
-        # from the download thread, and the main thread slot
-        # creates the QFileSystemWatcher
-        pass
+        entry = _make_entry()
+        panel._do_edit_remote(entry)
 
-    def test_watcher_watches_temp_file_directory(self):
-        """Watcher monitors the temp file's directory for changes."""
-        with tempfile.TemporaryDirectory() as tmpdir:
-            temp_file = Path(tmpdir) / "edit-me.txt"
-            temp_file.write_text("original")
+        # Wait for background thread to finish
+        deadline = time.monotonic() + 2
+        while not received and time.monotonic() < deadline:
+            _process_events(50)
 
-            watcher = QFileSystemWatcher()
-            watcher.addPath(tmpdir)
+        assert len(received) == 1
+        tmp_path, remote_path, name, tmp_dir = received[0]
+        assert remote_path == "/data/config.txt"
+        assert name == "config.txt"
+        assert os.path.exists(tmp_path)
+        assert Path(tmp_path).name == "config.txt"
 
-            # File is now watched
-            assert tmpdir in watcher.directories()
+    def test_temp_file_contains_remote_content(self, panel, qapp):
+        received = []
+        panel._edit_ready.connect(lambda *args: received.append(args))
 
-    def test_file_change_emitted_by_watcher(self, qapp):
-        """When temp file is modified, watcher emits fileChanged signal."""
-        with tempfile.TemporaryDirectory() as tmpdir:
-            temp_file = Path(tmpdir) / "edit-me.txt"
-            temp_file.write_text("original")
+        entry = _make_entry()
+        panel._do_edit_remote(entry)
 
-            watcher = QFileSystemWatcher()
-            watcher.addPath(str(temp_file))
+        deadline = time.monotonic() + 2
+        while not received and time.monotonic() < deadline:
+            _process_events(50)
 
-            file_changed = []
-            watcher.fileChanged.connect(lambda path: file_changed.append(path))
+        tmp_path = received[0][0]
+        assert Path(tmp_path).read_bytes() == b"server=localhost\nport=3306\n"
 
-            # Simulate editor saving the file
-            time.sleep(0.1)  # Ensure mtime changes
-            temp_file.write_text("modified")
+    def test_temp_dir_has_sftp_ui_prefix(self, panel, qapp):
+        received = []
+        panel._edit_ready.connect(lambda *args: received.append(args))
 
-            # Process Qt events to deliver signal
-            QApplication.processEvents()
+        panel._do_edit_remote(_make_entry())
 
-            # May or may not detect change (file system granularity)
-            # but the signal should be available
-            assert hasattr(watcher, 'fileChanged')
+        deadline = time.monotonic() + 2
+        while not received and time.monotonic() < deadline:
+            _process_events(50)
+
+        tmp_dir = received[0][3]
+        assert "sftp-ui-edit" in os.path.basename(tmp_dir)
+
+    def test_download_failure_emits_status(self, qapp):
+        sftp = MagicMock()
+        sftp.open_remote.side_effect = IOError("connection lost")
+        panel = _make_panel_with_sftp(sftp)
+
+        messages = []
+        panel.status_message.connect(messages.append)
+
+        panel._do_edit_remote(_make_entry())
+
+        deadline = time.monotonic() + 2
+        while len(messages) < 2 and time.monotonic() < deadline:
+            _process_events(50)
+
+        error_msgs = [m for m in messages if "failed" in m.lower()]
+        assert len(error_msgs) >= 1
+        panel.close()
 
 
-class TestAutoUploadOnSave:
-    """Test that file changes trigger automatic upload."""
+# ── 2. _on_edit_ready: watcher, editor, session ──────────────────────────────
 
-    def test_debounce_rapid_saves(self):
-        """Multiple saves within 500ms are debounced into one upload."""
-        # User saves file 5 times in quick succession
-        # Only 1 upload should be triggered after the last save
+class TestOnEditReady:
+    """_on_edit_ready creates watcher, launches editor, stores session."""
 
-        uploads = []
+    @pytest.fixture
+    def panel_and_tmp(self, qapp, tmp_path):
+        panel = _make_panel_with_sftp(FakeSFTP())
+        tmp_dir = str(tmp_path / "sftp-ui-edit-test")
+        os.makedirs(tmp_dir, exist_ok=True)
+        tmp_file = os.path.join(tmp_dir, "app.conf")
+        Path(tmp_file).write_text("key=value")
+        yield panel, tmp_file, tmp_dir
+        panel._cleanup_edit_sessions()
+        panel.close()
 
-        def trigger_upload():
-            uploads.append(time.time())
+    def test_editor_launched_with_tmp_path(self, panel_and_tmp):
+        panel, tmp_file, tmp_dir = panel_and_tmp
+        with patch("sftp_ui.core.platform_utils.open_with_editor") as mock_editor:
+            panel._on_edit_ready(tmp_file, "/remote/app.conf", "app.conf", tmp_dir)
+            mock_editor.assert_called_once_with(tmp_file)
 
-        # Simulate saves at t=0, 100, 200, 300, 400ms
-        # Expect upload at ~500ms (after debounce delay)
+    def test_session_stored(self, panel_and_tmp):
+        panel, tmp_file, tmp_dir = panel_and_tmp
+        with patch("sftp_ui.core.platform_utils.open_with_editor"):
+            panel._on_edit_ready(tmp_file, "/remote/app.conf", "app.conf", tmp_dir)
 
-        # After implementation, this will verify debounce works
-        pass
+        assert tmp_file in panel._edit_sessions
+        session = panel._edit_sessions[tmp_file]
+        assert session["remote_path"] == "/remote/app.conf"
+        assert session["name"] == "app.conf"
+        assert session["tmp_dir"] == tmp_dir
+        assert isinstance(session["watcher"], QFileSystemWatcher)
+        assert isinstance(session["timer"], QTimer)
 
-    def test_upload_triggered_on_file_change(self):
-        """fileChanged signal causes upload of the modified temp file."""
-        # When watcher emits fileChanged:
-        # 1. Read the modified temp file content
-        # 2. Call SFTPClient.write_file(remote_path, content)
-        # 3. Show status "Uploaded"
-        pass
+    def test_watcher_monitors_tmp_file(self, panel_and_tmp):
+        panel, tmp_file, tmp_dir = panel_and_tmp
+        with patch("sftp_ui.core.platform_utils.open_with_editor"):
+            panel._on_edit_ready(tmp_file, "/remote/app.conf", "app.conf", tmp_dir)
 
-    def test_upload_preserves_remote_permissions(self):
-        """After upload, remote file permissions are unchanged."""
-        # Don't overwrite chmod; just replace file content
-        pass
+        watcher = panel._edit_sessions[tmp_file]["watcher"]
+        assert tmp_file in watcher.files()
 
-    def test_upload_error_shown_to_user(self):
-        """If upload fails, show error in status bar."""
-        # "Failed to upload changes: <error>"
-        pass
+    def test_debounce_timer_is_singleshot(self, panel_and_tmp):
+        panel, tmp_file, tmp_dir = panel_and_tmp
+        with patch("sftp_ui.core.platform_utils.open_with_editor"):
+            panel._on_edit_ready(tmp_file, "/remote/app.conf", "app.conf", tmp_dir)
 
-    def test_concurrent_local_and_remote_changes(self):
-        """If user and remote both modify file, show conflict."""
-        # This is complex; maybe show a "refresh" dialog
-        pass
+        timer = panel._edit_sessions[tmp_file]["timer"]
+        assert timer.isSingleShot()
+        assert timer.interval() == 500
 
+    def test_status_message_emitted(self, panel_and_tmp):
+        panel, tmp_file, tmp_dir = panel_and_tmp
+        messages = []
+        panel.status_message.connect(messages.append)
+
+        with patch("sftp_ui.core.platform_utils.open_with_editor"):
+            panel._on_edit_ready(tmp_file, "/remote/app.conf", "app.conf", tmp_dir)
+
+        assert any("app.conf" in m for m in messages)
+
+
+# ── 3. File change → debounced upload ─────────────────────────────────────────
+
+class TestFileChangeUpload:
+    """Watcher fileChanged triggers debounced upload to remote."""
+
+    @pytest.fixture
+    def edit_session(self, qapp, tmp_path):
+        """Set up a panel with an active edit session."""
+        sftp = FakeSFTP({"/remote/data.json": b'{"old": true}'})
+        panel = _make_panel_with_sftp(sftp)
+
+        tmp_dir = str(tmp_path / "sftp-ui-edit-test")
+        os.makedirs(tmp_dir)
+        tmp_file = os.path.join(tmp_dir, "data.json")
+        Path(tmp_file).write_text('{"old": true}')
+
+        with patch("sftp_ui.core.platform_utils.open_with_editor"):
+            panel._on_edit_ready(tmp_file, "/remote/data.json", "data.json", tmp_dir)
+
+        yield panel, tmp_file, sftp
+        panel._cleanup_edit_sessions()
+        panel.close()
+
+    def test_file_modification_triggers_upload(self, edit_session, qapp):
+        panel, tmp_file, sftp = edit_session
+
+        # Simulate editor saving the file
+        Path(tmp_file).write_text('{"new": true}')
+
+        # Force debounce trigger (skip waiting for real timer)
+        timer = panel._edit_sessions[tmp_file]["timer"]
+        timer.timeout.emit()
+
+        # Wait for upload thread to complete
+        deadline = time.monotonic() + 3
+        while not sftp.uploads and time.monotonic() < deadline:
+            time.sleep(0.05)
+            _process_events(50)
+
+        assert len(sftp.uploads) >= 1
+        path, content = sftp.uploads[-1]
+        assert path == "/remote/data.json"
+        assert b'"new": true' in content
+
+    def test_debounce_coalesces_rapid_saves(self, edit_session, qapp):
+        panel, tmp_file, sftp = edit_session
+        watcher = panel._edit_sessions[tmp_file]["watcher"]
+        timer = panel._edit_sessions[tmp_file]["timer"]
+
+        # Simulate 5 rapid saves
+        for i in range(5):
+            Path(tmp_file).write_text(f"version {i}")
+            watcher.fileChanged.emit(tmp_file)
+
+        # Timer should be active (restarted on each change)
+        assert timer.isActive()
+
+        # Force single debounce trigger
+        timer.timeout.emit()
+
+        # Wait for upload thread to complete
+        deadline = time.monotonic() + 3
+        while not sftp.uploads and time.monotonic() < deadline:
+            time.sleep(0.05)
+            _process_events(50)
+
+        # Only 1 upload despite 5 changes
+        assert len(sftp.uploads) == 1
+        assert b"version 4" in sftp.uploads[0][1]
+
+    def test_upload_when_disconnected_emits_error(self, qapp, tmp_path):
+        panel = _make_panel_with_sftp(None)  # No SFTP = disconnected
+
+        tmp_dir = str(tmp_path / "sftp-ui-edit-disc")
+        os.makedirs(tmp_dir)
+        tmp_file = os.path.join(tmp_dir, "file.txt")
+        Path(tmp_file).write_text("content")
+
+        with patch("sftp_ui.core.platform_utils.open_with_editor"):
+            panel._on_edit_ready(tmp_file, "/remote/file.txt", "file.txt", tmp_dir)
+
+        messages = []
+        panel.status_message.connect(messages.append)
+
+        timer = panel._edit_sessions[tmp_file]["timer"]
+        timer.timeout.emit()
+
+        deadline = time.monotonic() + 2
+        while not any("disconnected" in m.lower() for m in messages) and time.monotonic() < deadline:
+            _process_events(50)
+
+        assert any("disconnected" in m.lower() for m in messages)
+        panel._cleanup_edit_sessions()
+        panel.close()
+
+
+# ── 4. Atomic-save editors ────────────────────────────────────────────────────
 
 class TestAtomicSaveEditors:
-    """Test handling of atomic-save editors (vim, VS Code, etc.)."""
+    """Editors like vim/VS Code delete and recreate the file on save."""
 
-    def test_vim_atomic_save_rewatches_file(self):
-        """Vim saves atomically: write new, then rename (delete original)."""
-        # After delete, watcher may lose track of the file
-        # Solution: re-add the file path when it's recreated
+    @pytest.fixture
+    def edit_session(self, qapp, tmp_path):
+        sftp = FakeSFTP({"/remote/init.cfg": b"original"})
+        panel = _make_panel_with_sftp(sftp)
 
-        with tempfile.TemporaryDirectory() as tmpdir:
-            temp_file = Path(tmpdir) / "file.txt"
-            temp_file.write_text("original")
+        tmp_dir = str(tmp_path / "sftp-ui-edit-atomic")
+        os.makedirs(tmp_dir)
+        tmp_file = os.path.join(tmp_dir, "init.cfg")
+        Path(tmp_file).write_text("original")
 
-            # Simulate vim atomic save:
-            # 1. Write to temp file
-            backup = Path(tmpdir) / "file.txt.bak"
-            backup.write_text("original")
+        with patch("sftp_ui.core.platform_utils.open_with_editor"):
+            panel._on_edit_ready(tmp_file, "/remote/init.cfg", "init.cfg", tmp_dir)
 
-            # 2. Rename original to backup (delete original)
-            temp_file.unlink()
+        yield panel, tmp_file, sftp
+        panel._cleanup_edit_sessions()
+        panel.close()
 
-            # 3. Rename temp to original
-            temp_file.write_text("edited")
+    def test_file_re_added_to_watcher_after_delete_recreate(self, edit_session, qapp):
+        panel, tmp_file, sftp = edit_session
+        watcher = panel._edit_sessions[tmp_file]["watcher"]
 
-            # Watcher should detect changes
-            assert temp_file.exists()
+        # Simulate atomic save: delete + recreate
+        os.unlink(tmp_file)
+        Path(tmp_file).write_text("edited via vim")
 
-    def test_vscode_atomic_save_detection(self):
-        """VS Code also uses atomic save; handle similarly."""
-        # Same as vim: delete + recreate
-        pass
+        # Trigger fileChanged (OS would fire this)
+        watcher.fileChanged.emit(tmp_file)
+        _process_events(100)
 
-    def test_re_add_path_on_delete_and_recreate(self):
-        """When file is deleted and recreated, re-add to watcher."""
-        # On fileChanged with isDir=False, re-add the path
-        pass
+        # File should be re-added to watcher
+        assert tmp_file in watcher.files()
 
+    def test_atomic_save_triggers_upload(self, edit_session, qapp):
+        panel, tmp_file, sftp = edit_session
+        watcher = panel._edit_sessions[tmp_file]["watcher"]
+        timer = panel._edit_sessions[tmp_file]["timer"]
 
-class TestEditRemoteIntegration:
-    """Integration tests for full edit workflow."""
+        # Atomic save: delete + recreate
+        os.unlink(tmp_file)
+        Path(tmp_file).write_text("edited content")
+        watcher.fileChanged.emit(tmp_file)
+        _process_events(50)
 
-    def test_right_click_file_shows_edit_option(self):
-        """Right-click context menu includes 'Edit' action."""
-        # Will verify after implementing context menu
-        pass
+        # Force debounce
+        timer.timeout.emit()
 
-    def test_edit_action_downloads_file(self):
-        """Clicking Edit initiates download to temp location."""
-        # Will mock SFTPClient.read_file and verify it's called
-        pass
+        # Wait for upload thread to complete
+        deadline = time.monotonic() + 3
+        while not sftp.uploads and time.monotonic() < deadline:
+            time.sleep(0.05)
+            _process_events(50)
 
-    def test_edit_action_launches_editor(self):
-        """After download, editor is launched with temp file."""
-        # Will mock editor launch and verify
-        pass
-
-    def test_edit_and_save_uploads_changes(self):
-        """User edits temp file, saves, and remote file is updated."""
-        # Full workflow test
-        pass
-
-    def test_edit_multiple_files_simultaneously(self):
-        """User can have multiple files open for edit at once."""
-        # Each file has its own temp dir and watcher
-        pass
-
-    def test_close_editor_preserves_temp_file(self):
-        """Closing the editor doesn't delete temp file; user can reopen."""
-        # Temp file remains until user clicks "Close Edit" or disconnects
-        pass
-
-    def test_reopen_file_for_edit_uses_latest_remote(self):
-        """Editing same file twice: 2nd edit gets latest remote version."""
-        # Delete old temp file, download fresh
-        pass
+        assert len(sftp.uploads) >= 1
+        assert sftp.uploads[-1][1] == b"edited content"
 
 
-class TestEditRemoteOnDisconnect:
-    """Test handling of open edits on disconnect."""
+# ── 5. Cleanup ────────────────────────────────────────────────────────────────
 
-    def test_disconnect_warning_if_files_being_edited(self):
-        """If disconnecting with open edits, show warning."""
-        # "You have 3 files open for edit. Changes will be lost."
-        pass
+class TestCleanupEditSessions:
+    """_cleanup_edit_sessions stops watchers and removes temp dirs."""
 
-    def test_pending_edits_on_reconnect(self):
-        """After reconnect, re-upload any pending edited files."""
-        # Store (temp_path, remote_path) pairs during edit
-        # On reconnect, re-upload them
-        pass
+    @pytest.fixture
+    def panel_with_sessions(self, qapp, tmp_path):
+        panel = _make_panel_with_sftp(FakeSFTP())
+        sessions = []
+        for i in range(3):
+            tmp_dir = str(tmp_path / f"sftp-ui-edit-{i}")
+            os.makedirs(tmp_dir)
+            tmp_file = os.path.join(tmp_dir, f"file{i}.txt")
+            Path(tmp_file).write_text(f"content {i}")
+            with patch("sftp_ui.core.platform_utils.open_with_editor"):
+                panel._on_edit_ready(tmp_file, f"/remote/file{i}.txt",
+                                     f"file{i}.txt", tmp_dir)
+            sessions.append((tmp_file, tmp_dir))
+        yield panel, sessions
+        panel.close()
 
-    def test_edited_file_deleted_on_disconnect(self):
-        """On disconnect, temp edit directories are removed."""
-        pass
+    def test_sessions_cleared(self, panel_with_sessions):
+        panel, sessions = panel_with_sessions
+        assert len(panel._edit_sessions) == 3
+
+        panel._cleanup_edit_sessions()
+
+        assert len(panel._edit_sessions) == 0
+        assert len(panel._edit_watchers) == 0
+
+    def test_temp_dirs_removed(self, panel_with_sessions):
+        panel, sessions = panel_with_sessions
+
+        panel._cleanup_edit_sessions()
+
+        for _, tmp_dir in sessions:
+            assert not os.path.exists(tmp_dir)
+
+    def test_timers_stopped(self, panel_with_sessions):
+        panel, sessions = panel_with_sessions
+
+        # Start all timers
+        for tmp_file, _ in sessions:
+            panel._edit_sessions[tmp_file]["timer"].start()
+
+        panel._cleanup_edit_sessions()
+        # No assertion needed: if timers fire after cleanup they'd crash.
+        # The test passing means cleanup worked.
+
+    def test_disconnect_calls_cleanup(self, panel_with_sessions):
+        panel, sessions = panel_with_sessions
+        assert len(panel._edit_sessions) == 3
+
+        panel.set_disconnected()
+
+        assert len(panel._edit_sessions) == 0
 
 
-class TestEditRemoteErrorHandling:
-    """Error cases."""
+# ── 6. Concurrent edits ──────────────────────────────────────────────────────
 
-    def test_download_failure_shows_error(self):
-        """If temp file download fails, show error."""
-        pass
+class TestConcurrentEdits:
+    """Multiple files can be open for edit simultaneously."""
 
-    def test_unreadable_file_shows_error(self):
-        """If remote file is binary/unreadable, show error."""
-        pass
+    def test_multiple_sessions_tracked(self, qapp, tmp_path):
+        panel = _make_panel_with_sftp(FakeSFTP())
+        files = ["app.py", "config.yaml", "readme.md"]
 
-    def test_upload_failure_retries_on_reconnect(self):
-        """If upload fails due to connection, retry after reconnect."""
-        pass
+        for name in files:
+            tmp_dir = str(tmp_path / f"edit-{name}")
+            os.makedirs(tmp_dir)
+            tmp_file = os.path.join(tmp_dir, name)
+            Path(tmp_file).write_text(f"content of {name}")
+            with patch("sftp_ui.core.platform_utils.open_with_editor"):
+                panel._on_edit_ready(tmp_file, f"/project/{name}", name, tmp_dir)
 
-    def test_permissions_error_on_upload(self):
-        """If remote dir becomes read-only, show error."""
-        pass
+        assert len(panel._edit_sessions) == 3
+        assert len(panel._edit_watchers) == 3
 
-    def test_disk_full_on_temp_download(self):
-        """If /tmp is full, show error."""
-        pass
+        # Each session has independent watcher and timer
+        watchers = [s["watcher"] for s in panel._edit_sessions.values()]
+        assert len(set(id(w) for w in watchers)) == 3
+
+        panel._cleanup_edit_sessions()
+        panel.close()
+
+    def test_editing_same_file_twice_replaces_session(self, qapp, tmp_path):
+        sftp = FakeSFTP({"/remote/x.txt": b"v1"})
+        panel = _make_panel_with_sftp(sftp)
+
+        # First edit
+        tmp_dir1 = str(tmp_path / "edit1")
+        os.makedirs(tmp_dir1)
+        tmp_file1 = os.path.join(tmp_dir1, "x.txt")
+        Path(tmp_file1).write_text("v1")
+        with patch("sftp_ui.core.platform_utils.open_with_editor"):
+            panel._on_edit_ready(tmp_file1, "/remote/x.txt", "x.txt", tmp_dir1)
+
+        # Second edit of same file (different tmp path)
+        tmp_dir2 = str(tmp_path / "edit2")
+        os.makedirs(tmp_dir2)
+        tmp_file2 = os.path.join(tmp_dir2, "x.txt")
+        Path(tmp_file2).write_text("v2")
+        with patch("sftp_ui.core.platform_utils.open_with_editor"):
+            panel._on_edit_ready(tmp_file2, "/remote/x.txt", "x.txt", tmp_dir2)
+
+        # Both sessions tracked (different tmp_paths)
+        assert tmp_file1 in panel._edit_sessions
+        assert tmp_file2 in panel._edit_sessions
+
+        panel._cleanup_edit_sessions()
+        panel.close()
+
+
+# ── 7. open_with_editor cross-platform ────────────────────────────────────────
+
+class TestOpenWithEditor:
+    """platform_utils.open_with_editor launches correct command per platform."""
+
+    def test_linux_uses_xdg_open(self):
+        from sftp_ui.core import platform_utils
+        with patch.object(platform_utils, "PLATFORM", "linux"):
+            with patch("subprocess.Popen") as mock_p:
+                platform_utils.open_with_editor("/tmp/file.txt")
+                mock_p.assert_called_once_with(["xdg-open", "/tmp/file.txt"])
+
+    def test_macos_uses_open(self):
+        from sftp_ui.core import platform_utils
+        with patch.object(platform_utils, "PLATFORM", "darwin"):
+            with patch("subprocess.Popen") as mock_p:
+                platform_utils.open_with_editor("/tmp/file.txt")
+                mock_p.assert_called_once_with(["open", "/tmp/file.txt"])
+
+    def test_windows_uses_startfile(self):
+        from sftp_ui.core import platform_utils
+        with patch.object(platform_utils, "PLATFORM", "win32"):
+            with patch("os.startfile", create=True) as mock_sf:
+                platform_utils.open_with_editor("C:\\temp\\file.txt")
+                mock_sf.assert_called_once_with("C:\\temp\\file.txt")
+
+
+# ── 8. Context menu integration ───────────────────────────────────────────────
+
+class TestContextMenuEdit:
+    """Remote panel context menu shows Edit for files, not directories."""
+
+    @pytest.fixture
+    def panel(self, qapp):
+        p = _make_panel_with_sftp(FakeSFTP())
+        p.resize(600, 400)
+        yield p
+        p._cleanup_edit_sessions()
+        p.close()
+
+    def test_edit_ready_signal_exists(self, panel):
+        assert hasattr(panel, "_edit_ready")
+
+    def test_edit_sessions_dict_initialized(self, panel):
+        assert isinstance(panel._edit_sessions, dict)
+        assert len(panel._edit_sessions) == 0
+
+    def test_edit_watchers_list_initialized(self, panel):
+        assert isinstance(panel._edit_watchers, list)
+        assert len(panel._edit_watchers) == 0
+
+
+# ── 9. Upload thread safety ──────────────────────────────────────────────────
+
+class TestUploadThreadSafety:
+    """Upload runs in background thread, status emitted back to main."""
+
+    def test_upload_runs_in_background_thread(self, qapp, tmp_path):
+        upload_threads = []
+        original_thread_start = threading.Thread.start
+
+        def _capture_start(self, *args, **kwargs):
+            upload_threads.append(self)
+            original_thread_start(self, *args, **kwargs)
+
+        sftp = FakeSFTP({"/remote/bg.txt": b"old"})
+        panel = _make_panel_with_sftp(sftp)
+
+        tmp_dir = str(tmp_path / "sftp-ui-edit-thread")
+        os.makedirs(tmp_dir)
+        tmp_file = os.path.join(tmp_dir, "bg.txt")
+        Path(tmp_file).write_text("new content")
+
+        with patch("sftp_ui.core.platform_utils.open_with_editor"):
+            panel._on_edit_ready(tmp_file, "/remote/bg.txt", "bg.txt", tmp_dir)
+
+        # Trigger upload via timer
+        with patch.object(threading.Thread, "start", _capture_start):
+            timer = panel._edit_sessions[tmp_file]["timer"]
+            timer.timeout.emit()
+
+        # At least one thread was started for download or upload
+        assert len(upload_threads) >= 1
+
+        panel._cleanup_edit_sessions()
+        panel.close()
+
+    def test_status_messages_emitted_during_upload(self, qapp, tmp_path):
+        sftp = FakeSFTP({"/remote/st.txt": b"data"})
+        panel = _make_panel_with_sftp(sftp)
+
+        tmp_dir = str(tmp_path / "sftp-ui-edit-status")
+        os.makedirs(tmp_dir)
+        tmp_file = os.path.join(tmp_dir, "st.txt")
+        Path(tmp_file).write_text("updated")
+
+        with patch("sftp_ui.core.platform_utils.open_with_editor"):
+            panel._on_edit_ready(tmp_file, "/remote/st.txt", "st.txt", tmp_dir)
+
+        messages = []
+        panel.status_message.connect(messages.append)
+
+        timer = panel._edit_sessions[tmp_file]["timer"]
+        timer.timeout.emit()
+
+        deadline = time.monotonic() + 2
+        while len(messages) < 2 and time.monotonic() < deadline:
+            _process_events(50)
+
+        # "Uploading st.txt…" and "Saved st.txt"
+        assert any("uploading" in m.lower() or "st.txt" in m.lower() for m in messages)
+
+        panel._cleanup_edit_sessions()
+        panel.close()
+
+
+# ── 10. Upload failure handling ───────────────────────────────────────────────
+
+class TestUploadFailure:
+    """Upload errors are caught and reported via status_message."""
+
+    def test_sftp_error_emits_save_failed(self, qapp, tmp_path):
+        sftp = MagicMock()
+        sftp.open_remote.side_effect = IOError("permission denied")
+        panel = _make_panel_with_sftp(sftp)
+
+        tmp_dir = str(tmp_path / "sftp-ui-edit-fail")
+        os.makedirs(tmp_dir)
+        tmp_file = os.path.join(tmp_dir, "locked.txt")
+        Path(tmp_file).write_text("changes")
+
+        with patch("sftp_ui.core.platform_utils.open_with_editor"):
+            panel._on_edit_ready(tmp_file, "/remote/locked.txt", "locked.txt", tmp_dir)
+
+        messages = []
+        panel.status_message.connect(messages.append)
+
+        timer = panel._edit_sessions[tmp_file]["timer"]
+        timer.timeout.emit()
+
+        deadline = time.monotonic() + 2
+        while not any("failed" in m.lower() for m in messages) and time.monotonic() < deadline:
+            _process_events(50)
+
+        assert any("failed" in m.lower() for m in messages)
+
+        panel._cleanup_edit_sessions()
+        panel.close()

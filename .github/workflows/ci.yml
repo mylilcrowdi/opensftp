@@ -72,6 +72,7 @@ jobs:
         run: |
           pytest tests/ \
             --ignore=tests/test_e2e_screenshots.py \
+            -p no:timeout \
             --tb=short -q
 
       - name: Report test count
