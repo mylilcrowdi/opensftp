@@ -329,6 +329,7 @@ class RemotePanel(QWidget):
     upload_requested = Signal(list, str)       # (local_paths, remote_dir)
     download_requested = Signal(list)          # list[RemoteEntry]
     remote_copy_requested = Signal(list, str)  # (entry_dicts, dest_dir) — remote-to-remote copy
+    open_terminal_requested = Signal(str)      # (remote_path,) — open SSH terminal at path
     status_message = Signal(str)
     column_widths_changed = Signal(list)   # [w0, w1, w2]
     sort_state_changed = Signal(int, int)  # (col, order_int)  — -1 col means neutral
@@ -729,9 +730,17 @@ class RemotePanel(QWidget):
             perm_act = menu.addAction("🔒  Permissions…") if len(selected) == 1 else None
             dup_act = menu.addAction("⧉  Duplicate") if len(selected) == 1 and not selected[0].is_dir else None
             edit_remote_act = menu.addAction("✎  Edit") if len(selected) == 1 and not selected[0].is_dir else None
+            # "Open SSH session here" — only for single directory selections
+            terminal_act = (
+                menu.addAction("🖥  Open SSH Session Here")
+                if len(selected) == 1 and selected[0].is_dir
+                else None
+            )
             menu.addSeparator()
         else:
-            dl_act = rename_act = del_act = copy_path_act = info_act = perm_act = dup_act = edit_remote_act = None
+            dl_act = rename_act = del_act = copy_path_act = info_act = perm_act = dup_act = edit_remote_act = terminal_act = None
+            # Show "Open SSH session here" for the current directory (no selection)
+            terminal_act = menu.addAction("🖥  Open SSH Session Here")
 
         new_folder_act = menu.addAction("📁  New Folder")
         new_file_act = menu.addAction("📄  New File")
@@ -774,6 +783,11 @@ class RemotePanel(QWidget):
             self._do_duplicate(selected[0])
         elif action == edit_remote_act and selected:
             self._do_edit_remote(selected[0])
+        elif action == terminal_act:
+            if selected and len(selected) == 1 and selected[0].is_dir:
+                self.open_terminal_requested.emit(selected[0].path)
+            else:
+                self.open_terminal_requested.emit(self._cwd)
         elif action == paste_act and local_files:
             self.upload_requested.emit(local_files, self._cwd)
 
