@@ -437,7 +437,7 @@ class RemotePanel(QWidget):
     def eventFilter(self, obj, event) -> bool:
         """Keep skeleton overlay sized to the table viewport."""
         import shiboken6
-        if not shiboken6.isValid(self):
+        if not shiboken6.isValid(self) or not hasattr(self, "_table"):
             return False
         if obj is self._table.viewport() and event.type() == QEvent.Type.Resize:
             self._skeleton.setGeometry(self._table.viewport().rect())
