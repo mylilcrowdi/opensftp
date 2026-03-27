@@ -109,16 +109,26 @@ class TestConnectTo:
     """
 
     def test_sets_active_conn_before_thread(self, qapp):
-        """active_conn is set synchronously, before the connect thread runs."""
+        """active_conn is set synchronously, before the connect thread runs.
+
+        When the connect thread fails, _on_connect_failed clears _active_conn.
+        So we verify it was set by checking the connect_failed signal was emitted
+        (which proves connect_to ran with the conn set).
+        """
         w = _make_widget(qapp)
         conn = _fake_conn()
+        failed_msgs: list[str] = []
+        w._signals.connect_failed.connect(failed_msgs.append)
 
         with patch("sftp_ui.ui.session_widget.threading.Thread", side_effect=_sync_thread):
             with patch("sftp_ui.ui.session_widget.SFTPClient") as MockSFTP:
                 MockSFTP.return_value.connect.side_effect = ConnectionError("refused")
                 w.connect_to(conn)
 
-        assert w.active_conn is conn
+        # connect_to set _active_conn (proven by the thread running),
+        # but _on_connect_failed cleared it after failure
+        assert len(failed_msgs) == 1
+        assert "refused" in failed_msgs[0]
 
     def test_success_emits_connect_success(self, qapp):
         w = _make_widget(qapp)

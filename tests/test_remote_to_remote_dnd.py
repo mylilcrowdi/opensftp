@@ -232,7 +232,7 @@ class TestDropTableRouting:
 
 
 # ---------------------------------------------------------------------------
-# MainWindow _on_remote_copy_requested unit tests (mocked SFTPClient)
+# SessionWidget _on_remote_copy_requested unit tests (mocked SFTPClient)
 # ---------------------------------------------------------------------------
 
 class TestMainWindowRemoteCopy:
@@ -258,17 +258,17 @@ class TestMainWindowRemoteCopy:
 
     def test_no_active_connection_emits_error(self):
         """Handler must emit an error status if not connected."""
-        from sftp_ui.ui.main_window import MainWindow
+        from sftp_ui.ui.session_widget import SessionWidget
 
         # Minimal mock of a MainWindow instance (avoid full widget construction)
-        mw = MagicMock(spec=MainWindow)
+        mw = MagicMock(spec=SessionWidget)
         mw._active_conn = None
         mw._signals = MagicMock()
         mw._signals.status = MagicMock()
         mw._signals.status.emit = MagicMock()
 
         # Call the unbound method directly, passing our mock as self
-        MainWindow._on_remote_copy_requested(
+        SessionWidget._on_remote_copy_requested(
             mw,
             [_make_entry_dict("x.txt", "/a/x.txt")],
             "/b",
@@ -279,7 +279,7 @@ class TestMainWindowRemoteCopy:
 
     def test_copy_streams_file_via_temp_buffer(self, tmp_path):
         """Files are downloaded to temp dir then uploaded to destination."""
-        from sftp_ui.ui.main_window import MainWindow
+        from sftp_ui.ui.session_widget import SessionWidget
         import threading
 
         # Create a realistic fake file (src content)
@@ -313,7 +313,7 @@ class TestMainWindowRemoteCopy:
         status_messages: list[str] = []
         refresh_called = []
 
-        mw = MagicMock(spec=MainWindow)
+        mw = MagicMock(spec=SessionWidget)
         mw._active_conn = MagicMock()
         mw._signals = MagicMock()
         mw._signals.status.emit.side_effect = status_messages.append
@@ -322,7 +322,7 @@ class TestMainWindowRemoteCopy:
         done = threading.Event()
 
         # Patch SFTPClient constructor to return our fake
-        with patch("sftp_ui.ui.main_window.SFTPClient", return_value=fake_client):
+        with patch("sftp_ui.ui.session_widget.SFTPClient", return_value=fake_client):
             # Patch threading.Thread to run synchronously
             orig_thread = threading.Thread
 
@@ -333,9 +333,9 @@ class TestMainWindowRemoteCopy:
                     self._target()
                     done.set()
 
-            with patch("sftp_ui.ui.main_window.threading.Thread", _SyncThread):
+            with patch("sftp_ui.ui.session_widget.threading.Thread", _SyncThread):
                 entry_dicts = [_make_entry_dict("readme.md", "/src/readme.md", size=len(src_content))]
-                MainWindow._on_remote_copy_requested(mw, entry_dicts, "/dst")
+                SessionWidget._on_remote_copy_requested(mw, entry_dicts, "/dst")
 
         done.wait(timeout=5)
 
@@ -357,7 +357,7 @@ class TestMainWindowRemoteCopy:
 
     def test_temp_dir_cleaned_up_on_success(self, tmp_path):
         """Temp directory is deleted after a successful copy."""
-        from sftp_ui.ui.main_window import MainWindow
+        from sftp_ui.ui.session_widget import SessionWidget
         import threading
 
         captured_tmp_dirs: list[str] = []
@@ -381,7 +381,7 @@ class TestMainWindowRemoteCopy:
         fake_client.walk = MagicMock(return_value=[])
         fake_client.close = MagicMock()
 
-        mw = MagicMock(spec=MainWindow)
+        mw = MagicMock(spec=SessionWidget)
         mw._active_conn = MagicMock()
         mw._signals = MagicMock()
         mw._signals.status.emit = MagicMock()
@@ -389,7 +389,7 @@ class TestMainWindowRemoteCopy:
 
         import builtins
 
-        with patch("sftp_ui.ui.main_window.SFTPClient", return_value=fake_client):
+        with patch("sftp_ui.ui.session_widget.SFTPClient", return_value=fake_client):
             import tempfile as _tmp_mod
 
             class _SyncThread:
@@ -397,10 +397,10 @@ class TestMainWindowRemoteCopy:
                     self._target = target
                 def start(self): self._target()
 
-            with patch("sftp_ui.ui.main_window.threading.Thread", _SyncThread):
+            with patch("sftp_ui.ui.session_widget.threading.Thread", _SyncThread):
                 with patch("tempfile.mkdtemp", side_effect=_patched_mkdtemp):
                     entry_dicts = [_make_entry_dict("a.txt", "/x/a.txt")]
-                    MainWindow._on_remote_copy_requested(mw, entry_dicts, "/y")
+                    SessionWidget._on_remote_copy_requested(mw, entry_dicts, "/y")
 
         # All captured temp dirs should have been removed
         for d in captured_tmp_dirs:
@@ -408,7 +408,7 @@ class TestMainWindowRemoteCopy:
 
     def test_connect_failure_emits_error_status(self):
         """If SFTPClient.connect() raises, emit error status and stop."""
-        from sftp_ui.ui.main_window import MainWindow
+        from sftp_ui.ui.session_widget import SessionWidget
         import threading
 
         fake_client = MagicMock(spec=SFTPClient)
@@ -416,21 +416,21 @@ class TestMainWindowRemoteCopy:
         fake_client.close = MagicMock()
 
         status_messages: list[str] = []
-        mw = MagicMock(spec=MainWindow)
+        mw = MagicMock(spec=SessionWidget)
         mw._active_conn = MagicMock()
         mw._signals = MagicMock()
         mw._signals.status.emit.side_effect = status_messages.append
         mw._signals.refresh_remote.emit = MagicMock()
 
-        with patch("sftp_ui.ui.main_window.SFTPClient", return_value=fake_client):
+        with patch("sftp_ui.ui.session_widget.SFTPClient", return_value=fake_client):
             class _SyncThread:
                 def __init__(self, target=None, daemon=None, **kw):
                     self._target = target
                 def start(self): self._target()
 
-            with patch("sftp_ui.ui.main_window.threading.Thread", _SyncThread):
+            with patch("sftp_ui.ui.session_widget.threading.Thread", _SyncThread):
                 entry_dicts = [_make_entry_dict("f.txt", "/a/f.txt")]
-                MainWindow._on_remote_copy_requested(mw, entry_dicts, "/b")
+                SessionWidget._on_remote_copy_requested(mw, entry_dicts, "/b")
 
         assert any("failed" in m.lower() or "error" in m.lower() or "connect" in m.lower()
                    for m in status_messages)
@@ -439,7 +439,7 @@ class TestMainWindowRemoteCopy:
 
     def test_directory_copy_uses_walk(self):
         """Copying a directory entry triggers walk() for recursive expansion."""
-        from sftp_ui.ui.main_window import MainWindow
+        from sftp_ui.ui.session_widget import SessionWidget
         import threading
 
         walked_dirs: list[str] = []
@@ -478,21 +478,21 @@ class TestMainWindowRemoteCopy:
         fake_client.mkdir_p = MagicMock()
         fake_client.close = MagicMock()
 
-        mw = MagicMock(spec=MainWindow)
+        mw = MagicMock(spec=SessionWidget)
         mw._active_conn = MagicMock()
         mw._signals = MagicMock()
         mw._signals.status.emit = MagicMock()
         mw._signals.refresh_remote.emit = MagicMock()
 
-        with patch("sftp_ui.ui.main_window.SFTPClient", return_value=fake_client):
+        with patch("sftp_ui.ui.session_widget.SFTPClient", return_value=fake_client):
             class _SyncThread:
                 def __init__(self, target=None, daemon=None, **kw):
                     self._target = target
                 def start(self): self._target()
 
-            with patch("sftp_ui.ui.main_window.threading.Thread", _SyncThread):
+            with patch("sftp_ui.ui.session_widget.threading.Thread", _SyncThread):
                 entry_dicts = [_make_entry_dict("pkg", "/src/pkg", is_dir=True)]
-                MainWindow._on_remote_copy_requested(mw, entry_dicts, "/dst")
+                SessionWidget._on_remote_copy_requested(mw, entry_dicts, "/dst")
 
         assert "/src/pkg" in walked_dirs
         # Both files should have been written to the destination

@@ -173,14 +173,16 @@ class TestTabCreation:
         assert main_window._active_session() is session
 
     def test_max_tabs_limit(self, main_window):
-        # Fill up to max
-        while main_window._tabs.count() < MainWindow.MAX_TABS:
+        # Fill up to max (uses _max_tabs property which depends on license)
+        limit = main_window._max_tabs
+        while main_window._tabs.count() < limit:
             main_window._add_new_tab()
-        assert main_window._tabs.count() == MainWindow.MAX_TABS
-        # Adding one more should be blocked (shows warning dialog)
-        with patch.object(QMessageBox, "warning"):
+        assert main_window._tabs.count() == limit
+        # Adding one more should be blocked (shows warning/gate dialog)
+        with patch.object(QMessageBox, "exec", return_value=None), \
+             patch.object(QMessageBox, "clickedButton", return_value=None):
             main_window._add_new_tab()
-        assert main_window._tabs.count() == MainWindow.MAX_TABS
+        assert main_window._tabs.count() == limit
 
     def test_connect_in_empty_tab_uses_that_tab(self, main_window):
         """If current tab is not connected, connecting fills it."""
@@ -393,6 +395,121 @@ class TestMultiTabIntegration:
         for s in (s1, s2):
             s.set_frost_active(False)
             assert all(not f._active for f in s._glass_frames)
+
+
+class TestComboDots:
+    """Test connection status dots in the combo dropdown."""
+
+    def test_combo_has_delegate(self, main_window):
+        from sftp_ui.ui.widgets.connection_combo_delegate import ConnectionComboDelegate
+        assert isinstance(main_window._conn_combo.itemDelegate(), ConnectionComboDelegate)
+
+    def test_idle_connections_have_false_role(self, main_window):
+        from sftp_ui.ui.widgets.connection_combo_delegate import ROLE_CONNECTED
+        main_window._update_combo_dots()
+        model = main_window._conn_combo.model()
+        for i in range(main_window._conn_combo.count()):
+            assert model.data(model.index(i, 0), ROLE_CONNECTED) is False
+
+    def test_connected_session_sets_true_role(self, main_window):
+        from sftp_ui.ui.widgets.connection_combo_delegate import ROLE_CONNECTED
+        session = main_window._active_session()
+        conn = main_window._store.all()[0]
+        session._active_conn = conn
+        mock_sftp = MagicMock()
+        mock_sftp.is_connected.return_value = True
+        session._sftp = mock_sftp
+
+        main_window._update_combo_dots()
+        model = main_window._conn_combo.model()
+        for i in range(main_window._conn_combo.count()):
+            conn_id = main_window._conn_combo.itemData(i)
+            expected = conn_id == conn.id
+            assert model.data(model.index(i, 0), ROLE_CONNECTED) is expected
+
+        session._sftp = None
+        session._active_conn = None
+
+    def test_dots_update_on_connection_changed(self, main_window):
+        from sftp_ui.ui.widgets.connection_combo_delegate import ROLE_CONNECTED
+        session = main_window._active_session()
+        conn = main_window._store.all()[0]
+        mock_sftp = MagicMock()
+        mock_sftp.is_connected.return_value = True
+        session._sftp = mock_sftp
+        session._active_conn = conn
+
+        # Simulate the signal
+        main_window._on_session_connection_changed(session, conn)
+
+        model = main_window._conn_combo.model()
+        for i in range(main_window._conn_combo.count()):
+            if main_window._conn_combo.itemData(i) == conn.id:
+                assert model.data(model.index(i, 0), ROLE_CONNECTED) is True
+                break
+
+        session._sftp = None
+        session._active_conn = None
+
+
+class TestTabBadges:
+    """Test tab label badges for transfers and reconnection state."""
+
+    def test_no_badge_when_idle(self, main_window):
+        main_window._update_tab_badges()
+        assert main_window._tabs.tabText(0) == "New Tab"
+
+    def test_pending_count_in_tab_label(self, main_window):
+        session = main_window._active_session()
+        conn = Connection(name="BadgeServer", host="b.io", user="u")
+        session._active_conn = conn
+        idx = main_window._tabs.indexOf(session)
+        main_window._tabs.setTabText(idx, "BadgeServer")
+
+        mock_queue = MagicMock()
+        mock_queue.pending_count.return_value = 5
+        session._queue = mock_queue
+
+        main_window._update_tab_badges()
+        assert main_window._tabs.tabText(idx) == "BadgeServer (5)"
+
+        session._queue = None
+        session._active_conn = None
+
+    def test_reconnecting_indicator_in_tab_label(self, main_window):
+        session = main_window._active_session()
+        conn = Connection(name="RecoServer", host="r.io", user="u")
+        session._active_conn = conn
+        idx = main_window._tabs.indexOf(session)
+        session._reconnecting = True
+
+        main_window._update_tab_badges()
+        text = main_window._tabs.tabText(idx)
+        assert "⟳" in text
+        assert "RecoServer" in text
+
+        session._reconnecting = False
+        session._active_conn = None
+
+    def test_badge_cleared_when_transfers_done(self, main_window):
+        session = main_window._active_session()
+        conn = Connection(name="DoneServer", host="d.io", user="u")
+        session._active_conn = conn
+
+        mock_queue = MagicMock()
+        mock_queue.pending_count.return_value = 3
+        session._queue = mock_queue
+        main_window._update_tab_badges()
+
+        idx = main_window._tabs.indexOf(session)
+        assert "(3)" in main_window._tabs.tabText(idx)
+
+        mock_queue.pending_count.return_value = 0
+        main_window._update_tab_badges()
+        assert main_window._tabs.tabText(idx) == "DoneServer"
+
+        session._queue = None
+        session._active_conn = None
 
 
 class TestTabMemoryManagement:

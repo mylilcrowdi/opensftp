@@ -59,6 +59,7 @@ class _SessionSignals(QObject):
     reconnected      = Signal()
     reconnect_failed = Signal(str)
     show_overwrite_dialog = Signal(list)
+    cross_upload     = Signal(list, str)  # (local_paths, remote_dir) — from bg thread
 
 
 class SessionWidget(QWidget):
@@ -68,6 +69,8 @@ class SessionWidget(QWidget):
     connection_changed = Signal(object)   # Connection or None
     status_message     = Signal(str)
     job_finished       = Signal(object)   # TransferJob — for history recording
+    reconnect_state_changed = Signal()    # Emitted when reconnecting starts/ends
+    cross_session_transfer = Signal(str, list, str)  # (source_session_id, entry_dicts, dest_dir)
 
     def __init__(
         self,
@@ -171,12 +174,14 @@ class SessionWidget(QWidget):
         sig.reconnected.connect(self._on_reconnected)
         sig.reconnect_failed.connect(self._on_reconnect_failed)
         sig.show_overwrite_dialog.connect(self._on_show_overwrite_dialog)
+        sig.cross_upload.connect(self._on_upload_requested)
         sig.connect_success.connect(self.on_connect_success)
         sig.connect_failed.connect(self._on_connect_failed)
 
         self.remote_panel.upload_requested.connect(self._on_upload_requested)
         self.remote_panel.download_requested.connect(self._on_download_requested)
         self.remote_panel.remote_copy_requested.connect(self._on_remote_copy_requested)
+        self.remote_panel.cross_session_drop.connect(self._on_cross_session_drop)
         self.remote_panel.open_terminal_requested.connect(self._on_open_terminal_requested)
         self.local_panel.download_drop_requested.connect(self._on_download_drop)
         self.remote_panel.status_message.connect(self.status_message)
@@ -320,13 +325,16 @@ class SessionWidget(QWidget):
 
     def _on_reconnecting(self) -> None:
         self.status_message.emit("⟳ Reconnecting…")
+        self.reconnect_state_changed.emit()
 
     def _on_reconnected(self) -> None:
         self.status_message.emit("Reconnected")
         self.remote_panel.refresh()
+        self.reconnect_state_changed.emit()
 
     def _on_reconnect_failed(self, error: str) -> None:
         self.status_message.emit(f"Connection lost: {error}")
+        self.reconnect_state_changed.emit()
 
     # ── Overwrite dialog ──────────────────────────────────────────────────────
 
@@ -826,6 +834,12 @@ class SessionWidget(QWidget):
                 self._signals.refresh_remote.emit()
 
         threading.Thread(target=_run, daemon=True).start()
+
+    # ── Cross-session transfer ──────────────────────────────────────────────
+
+    def _on_cross_session_drop(self, source_session_id: str, entry_dicts: list, dest_dir: str) -> None:
+        """Bubble up to MainWindow which can find the source session."""
+        self.cross_session_transfer.emit(source_session_id, entry_dicts, dest_dir)
 
     # ── Terminal ──────────────────────────────────────────────────────────────
 

@@ -335,6 +335,7 @@ class RemotePanel(QWidget):
     upload_requested = Signal(list, str)       # (local_paths, remote_dir)
     download_requested = Signal(list)          # list[RemoteEntry]
     remote_copy_requested = Signal(list, str)  # (entry_dicts, dest_dir) — remote-to-remote copy
+    cross_session_drop = Signal(str, list, str)  # (source_session_id, entry_dicts, dest_dir)
     open_terminal_requested = Signal(str)      # (remote_path,) — open SSH terminal at path
     status_message = Signal(str)
     column_widths_changed = Signal(list)   # [w0, w1, w2]
@@ -1282,6 +1283,7 @@ class _DropOverlay(QWidget):
 # ── Drop-enabled table ─────────────────────────────────────────────────────────
 
 REMOTE_ENTRIES_MIME = "application/x-sftp-ui-remote-entries"
+CROSS_SESSION_MIME  = "application/x-sftp-ui-session-id"
 
 
 class _DropTable(QTableView):
@@ -1298,7 +1300,7 @@ class _DropTable(QTableView):
     # ── Drag out (remote → local) ─────────────────────────────────────────────
 
     def mimeData(self, indexes) -> QMimeData:
-        """Serialize selected remote entries for drag to local panel."""
+        """Serialize selected remote entries for drag to local/remote panel."""
         import json
         seen_rows: set[int] = set()
         entries: list[dict] = []
@@ -1317,6 +1319,9 @@ class _DropTable(QTableView):
             })
         mime = QMimeData()
         mime.setData(REMOTE_ENTRIES_MIME, json.dumps(entries).encode())
+        # Tag with session identity so cross-tab drops can route correctly
+        session_id = str(id(self._panel.parent()))
+        mime.setData(CROSS_SESSION_MIME, session_id.encode())
         return mime
 
     def _show_overlay(self, label: str = "Drop to upload") -> None:
@@ -1331,7 +1336,15 @@ class _DropTable(QTableView):
             self._show_overlay("Drop to upload")
             event.acceptProposedAction()
         elif mime.hasFormat(REMOTE_ENTRIES_MIME):
-            self._show_overlay("Drop to copy")
+            # Distinguish same-session copy vs cross-session transfer
+            source_id = ""
+            if mime.hasFormat(CROSS_SESSION_MIME):
+                source_id = bytes(mime.data(CROSS_SESSION_MIME)).decode()
+            my_id = str(id(self._panel.parent()))
+            if source_id and source_id != my_id:
+                self._show_overlay("Drop to transfer (cross-session)")
+            else:
+                self._show_overlay("Drop to copy")
             event.acceptProposedAction()
 
     def dragMoveEvent(self, event) -> None:
@@ -1401,7 +1414,6 @@ class _DropTable(QTableView):
                 target_dir = entry.path
 
         if mime.hasFormat(REMOTE_ENTRIES_MIME):
-            # Remote → Remote copy (same server, via temp buffer)
             import json
             try:
                 entry_dicts = json.loads(
@@ -1410,7 +1422,17 @@ class _DropTable(QTableView):
             except Exception:
                 entry_dicts = []
             if entry_dicts:
-                self._panel._on_remote_drop(entry_dicts, target_dir)
+                # Check if this drag came from a different session (cross-tab)
+                source_session_id = ""
+                if mime.hasFormat(CROSS_SESSION_MIME):
+                    source_session_id = bytes(mime.data(CROSS_SESSION_MIME)).decode()
+                my_session_id = str(id(self._panel.parent()))
+                if source_session_id and source_session_id != my_session_id:
+                    self._panel.cross_session_drop.emit(
+                        source_session_id, entry_dicts, target_dir,
+                    )
+                else:
+                    self._panel._on_remote_drop(entry_dicts, target_dir)
                 event.acceptProposedAction()
         elif mime.hasUrls():
             # Local → Remote upload
